@@ -1,0 +1,15 @@
+.app-container { display: flex; height: 100vh; font-family: Arial, sans-serif; }
+.sidebar { width: 250px; background: #f4f4f4; padding: 1rem; overflow-y: auto; }
+.sidebar button { width: 100%; padding: 0.5rem; margin-bottom: 1rem; }
+.sidebar li { list-style: none; padding: 0.5rem; cursor: pointer; }
+.sidebar li.active { background: #ddd; }
+.chat-area { flex: 1; display: flex; flex-direction: column; }
+.messages { flex: 1; padding: 1rem; overflow-y: auto; }
+.message { margin-bottom: 0.8rem; }
+.message.user { color: blue; }
+.message.assistant { color: green; }
+.input-area { display: flex; padding: 0.5rem; border-top: 1px solid #ccc; }
+.input-area input { flex: 1; padding: 0.5rem; }
+.no-chat { display: flex; justify-content: center; align-items: center; height: 100%; color: gray; }
+.model-manager { margin-top: 1rem; }
+

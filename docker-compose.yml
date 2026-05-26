@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: aiuser
+      POSTGRES_PASSWORD: aipassword
+      POSTGRES_DB: erpai_hub
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiuser -d erpai_hub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Ollama LLM ────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  # ── Redis ─────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: erpai-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  # ── FastAPI ───────────────────────────────────────────────
+  api:
+    build: ./api
+    container_name: ai-api
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://aiuser:aipassword@postgres:5432/erpai_hub
+      OLLAMA_URL: http://ollama:11434
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/app/chroma_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+  # ── React Frontend ────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    container_name: ai-frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  ollama_data:
+  chroma_data:
