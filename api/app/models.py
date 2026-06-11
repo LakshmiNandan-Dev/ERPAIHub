@@ -245,7 +245,7 @@ class EbsEnvironment(Base):
     # WebLogic AdminServer account are prompted for by adop phases.
     # 'system_user' is a reserved word in PostgreSQL 16+, so force quoting of the
     # identifier; otherwise CREATE TABLE fails with a syntax error.
-    system_user = Column(String(100), nullable=True, server_default='system', quote=True)   # system | ebs_system
+    system_user = Column("system_user", String(100), nullable=True, server_default='system', quote=True)   # system | ebs_system
     system_password_enc = Column(Text, nullable=True)
     weblogic_user = Column(String(100), nullable=True, server_default='weblogic')
     weblogic_password_enc = Column(Text, nullable=True)
