@@ -33,3 +33,6 @@ frontend/dist/
 
 # Claude Code
 .claude/
+
+# Generated product documents, diagrams & their build scripts (kept local, not pushed)
+document/

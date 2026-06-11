@@ -21,6 +21,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.models import Base
 target_metadata = Base.metadata
 
+# Prefer the runtime DATABASE_URL (set in docker-compose) so migrations run
+# against the same database the app uses, regardless of the ini default.
+_db_url = os.environ.get("DATABASE_URL")
+if _db_url:
+    config.set_main_option("sqlalchemy.url", _db_url)
+
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")

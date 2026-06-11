@@ -4,10 +4,13 @@ import './ChatLayout.css';
 import RagUpload from '../Rag/RagUpload';
 import DeploymentCenter from '../Deployment/DeploymentCenter';
 import PerformanceAgent from '../Performance/PerformanceAgent';
+import AdminConsole from '../Admin/AdminConsole';
+import CloneCenter from '../Cloning/CloneCenter';
+import PatchCenter from '../Patching/PatchCenter';
 import ReactMarkdown from 'react-markdown';
 import {
   BrainCircuit, MessageSquarePlus, Trash2, Settings2, LogOut,
-  Server, Globe, Bot, Cpu, Pencil, Check, X
+  Server, Globe, Bot, Cpu, Pencil, Check, X, ShieldCheck, KeyRound
 } from 'lucide-react';
 
 export default function ChatLayout({ setAuthToken }) {
@@ -23,6 +26,35 @@ export default function ChatLayout({ setAuthToken }) {
   const [showKnowledgeBase, setShowKnowledgeBase] = useState(false);
   const [showDeployments, setShowDeployments] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
+  const [showCloning, setShowCloning] = useState(false);
+  const [showPatching, setShowPatching] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+
+  // Change-password modal
+  const [showChangePw, setShowChangePw] = useState(false);
+  const [pwOld, setPwOld] = useState('');
+  const [pwNew, setPwNew] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [pwError, setPwError] = useState('');
+  const [pwSuccess, setPwSuccess] = useState('');
+  const [pwSaving, setPwSaving] = useState(false);
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPwError(''); setPwSuccess('');
+    if (pwNew.length < 4) { setPwError('New password must be at least 4 characters.'); return; }
+    if (pwNew !== pwConfirm) { setPwError('New passwords do not match.'); return; }
+    setPwSaving(true);
+    try {
+      await api.post('/auth/change-password', { old_password: pwOld, new_password: pwNew });
+      setPwSuccess('Password updated successfully.');
+      setPwOld(''); setPwNew(''); setPwConfirm('');
+    } catch (err) {
+      setPwError(err.response?.data?.detail || 'Could not change password.');
+    } finally {
+      setPwSaving(false);
+    }
+  };
   const [activeCorrectionId, setActiveCorrectionId] = useState(null);
   const [correctionText, setCorrectionText] = useState('');
 
@@ -40,63 +72,50 @@ export default function ChatLayout({ setAuthToken }) {
   const _llmStored = (() => { try { return JSON.parse(localStorage.getItem('llm_config') || '{}'); } catch { return {}; } })();
   const [llmProvider, setLlmProvider] = useState(_llmStored.provider || 'ollama');
   const [llmModel, setLlmModel] = useState(_llmStored.model || '');
-  const [llmApiKey, setLlmApiKey] = useState(_llmStored.api_key || '');
   const [llmBaseUrl, setLlmBaseUrl] = useState(_llmStored.base_url || 'http://localhost:11434');
 
-  const LLM_DEFAULTS = { ollama: 'llama3.2:1b', openai: 'gpt-4o-mini', anthropic: 'claude-haiku-4-5-20251001' };
+  const LLM_DEFAULTS = {
+    ollama: 'llama3.2:1b', openai: 'gpt-4o-mini',
+    anthropic: 'claude-haiku-4-5-20251001', gemini: 'gemini-2.0-flash',
+  };
 
   const handleSaveLLMConfig = (e) => {
     e.preventDefault();
+    // Only the provider/model selection is stored locally. API keys live
+    // server-side (admin-managed, encrypted) and are never kept in the browser.
     const config = {
       provider: llmProvider,
       model: llmModel.trim() || LLM_DEFAULTS[llmProvider],
-      api_key: llmApiKey.trim(),
       base_url: llmBaseUrl.trim() || 'http://localhost:11434',
     };
     localStorage.setItem('llm_config', JSON.stringify(config));
     setLlmModel(config.model);
   };
 
-  // SSH Server connections
-  const [serverConnections, setServerConnections] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('ebs_server_connections') || '[]'); } catch { return []; }
-  });
-  const [isAddingSrv, setIsAddingSrv] = useState(false);
-  const [editingSrvIndex, setEditingSrvIndex] = useState(null);
-  const [srvFormName, setSrvFormName] = useState('');
-  const [srvFormHostname, setSrvFormHostname] = useState('');
-  const [srvFormPort, setSrvFormPort] = useState('22');
-  const [srvFormUsername, setSrvFormUsername] = useState('');
-  const [srvFormPassword, setSrvFormPassword] = useState('');
-  const [srvFormType, setSrvFormType] = useState('application');
-  const [srvFormServices, setSrvFormServices] = useState({ web: true, forms: true, concurrent: true });
-
-  // Environments with Oracle DB credentials
-  const [environments, setEnvironments] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem('ebs_environments') || '[]');
-      return stored.filter(e => e.name).map(e => ({
-        name: e.name,
-        db_host: e.db_host || '',
-        db_port: e.db_port || 1521,
-        db_sid: e.db_sid || '',
-        db_user: e.db_user || 'apps',
-        db_password: e.db_password || '',
-      }));
-    } catch { return []; }
-  });
-  const [isAddingEnv, setIsAddingEnv] = useState(false);
-  const [editingEnvIndex, setEditingEnvIndex] = useState(null);
-  const [envFormName, setEnvFormName] = useState('');
-  const [envFormDbHost, setEnvFormDbHost] = useState('');
-  const [envFormDbPort, setEnvFormDbPort] = useState('1521');
-  const [envFormDbSid, setEnvFormDbSid] = useState('');
-  const [envFormDbUser, setEnvFormDbUser] = useState('apps');
-  const [envFormDbPassword, setEnvFormDbPassword] = useState('');
+  // Admin-managed SSH servers & environments (read-only here; no secrets).
+  // Created and edited in the Admin Console; consumed via /config/*.
+  const [serverConnections, setServerConnections] = useState([]);
+  const [environments, setEnvironments] = useState([]);
 
   const messagesEndRef = useRef(null);
   const userMenuRef = useRef(null);
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; }
+  });
+
+  // Role-based access. The default 'user' role can chat but cannot invoke agents;
+  // only Admin/DBA can run agents and reach the Admin Console.
+  const role = String(user.role || (user.is_admin ? 'admin' : 'user')).toLowerCase();
+  const canInvokeAgents = role === 'admin' || role === 'dba';
+  const canAdminConsole = role === 'admin' || role === 'dba';
+  const roleLabel = role === 'admin' ? 'Administrator' : role === 'dba' ? 'DBA' : 'Member';
+
+  // Refresh the current user (e.g. is_admin) so the Admin Console appears without re-login.
+  useEffect(() => {
+    api.get('/auth/getuser')
+      .then(res => { setUser(res.data); localStorage.setItem('user', JSON.stringify(res.data)); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(event) {
@@ -110,105 +129,18 @@ export default function ChatLayout({ setAuthToken }) {
     };
   }, [userMenuRef]);
 
-  const resetSrvForm = () => {
-    setSrvFormName(''); setSrvFormHostname(''); setSrvFormPort('22');
-    setSrvFormUsername(''); setSrvFormPassword('');
-    setSrvFormType('application');
-    setSrvFormServices({ web: true, forms: true, concurrent: true });
-  };
-
-  const handleSaveServer = (e) => {
-    e.preventDefault();
-    if (!srvFormName.trim() || !srvFormHostname.trim()) return;
-    const entry = {
-      name: srvFormName.trim(),
-      hostname: srvFormHostname.trim(),
-      port: parseInt(srvFormPort) || 22,
-      username: srvFormUsername.trim(),
-      password: srvFormPassword.trim(),
-      server_type: srvFormType,
-      app_services: srvFormType === 'application'
-        ? Object.entries(srvFormServices).filter(([, v]) => v).map(([k]) => k)
-        : [],
-    };
-    const updated = editingSrvIndex !== null
-      ? serverConnections.map((s, i) => i === editingSrvIndex ? entry : s)
-      : [...serverConnections, entry];
-    setServerConnections(updated);
-    localStorage.setItem('ebs_server_connections', JSON.stringify(updated));
-    setIsAddingSrv(false);
-    setEditingSrvIndex(null);
-    resetSrvForm();
-  };
-
-  const handleEditServer = (index) => {
-    const s = serverConnections[index];
-    setEditingSrvIndex(index);
-    setIsAddingSrv(true);
-    setSrvFormName(s.name);
-    setSrvFormHostname(s.hostname);
-    setSrvFormPort(String(s.port || 22));
-    setSrvFormUsername(s.username || '');
-    setSrvFormPassword(s.password || '');
-    setSrvFormType(s.server_type || 'application');
-    const svc = { web: false, forms: false, concurrent: false };
-    (s.app_services || []).forEach(k => { if (k in svc) svc[k] = true; });
-    setSrvFormServices(svc);
-  };
-
-  const handleDeleteServer = (index) => {
-    if (!window.confirm('Delete this server connection?')) return;
-    const updated = serverConnections.filter((_, i) => i !== index);
-    setServerConnections(updated);
-    localStorage.setItem('ebs_server_connections', JSON.stringify(updated));
-  };
-
-  const resetEnvForm = () => {
-    setEnvFormName(''); setEnvFormDbHost(''); setEnvFormDbPort('1521');
-    setEnvFormDbSid(''); setEnvFormDbUser('apps'); setEnvFormDbPassword('');
-  };
-
-  const handleSaveEnv = (e) => {
-    e.preventDefault();
-    if (!envFormName.trim()) return;
-    const entry = {
-      name: envFormName.trim().toUpperCase(),
-      db_host: envFormDbHost.trim(),
-      db_port: parseInt(envFormDbPort) || 1521,
-      db_sid: envFormDbSid.trim(),
-      db_user: envFormDbUser.trim(),
-      db_password: envFormDbPassword.trim(),
-    };
-    const updated = editingEnvIndex !== null
-      ? environments.map((e, i) => i === editingEnvIndex ? entry : e)
-      : [...environments, entry];
-    setEnvironments(updated);
-    localStorage.setItem('ebs_environments', JSON.stringify(updated));
-    setIsAddingEnv(false);
-    setEditingEnvIndex(null);
-    resetEnvForm();
-  };
-
-  const handleEditEnv = (index) => {
-    const env = environments[index];
-    setEditingEnvIndex(index);
-    setIsAddingEnv(true);
-    setEnvFormName(env.name);
-    setEnvFormDbHost(env.db_host || '');
-    setEnvFormDbPort(String(env.db_port || 1521));
-    setEnvFormDbSid(env.db_sid || '');
-    setEnvFormDbUser(env.db_user || 'apps');
-    setEnvFormDbPassword(env.db_password || '');
-  };
-
-  const handleDeleteEnv = (index) => {
-    if (!window.confirm('Delete this environment?')) return;
-    const updated = environments.filter((_, i) => i !== index);
-    setEnvironments(updated);
-    localStorage.setItem('ebs_environments', JSON.stringify(updated));
-  };
+  // Load the admin-managed servers & environments (read-only, no secrets).
+  useEffect(() => {
+    api.get('/config/servers').then(r => setServerConnections(r.data)).catch(() => {});
+    api.get('/config/environments').then(r => setEnvironments(r.data)).catch(() => {});
+  }, []);
 
   const handleAgentChange = (val) => {
+    // Only Admin/DBA may invoke agents; the default role is limited to chat.
+    if (val !== 'diagnostic' && !canInvokeAgents) {
+      setActiveAgent('diagnostic');
+      return;
+    }
     setActiveAgent(val);
     if (val === 'deployments') {
       setShowDeployments(true);
@@ -216,6 +148,10 @@ export default function ChatLayout({ setAuthToken }) {
       setShowKnowledgeBase(true);
     } else if (val === 'performance') {
       setShowPerformance(true);
+    } else if (val === 'cloning') {
+      setShowCloning(true);
+    } else if (val === 'patching') {
+      setShowPatching(true);
     }
   };
 
@@ -557,12 +493,19 @@ export default function ChatLayout({ setAuthToken }) {
                 onChange={(e) => handleAgentChange(e.target.value)}
               >
                 <option value="diagnostic">🤖 General Diagnostic Assistant</option>
-                <option value="deployments">🚀 Code Deployment Agent</option>
-                <option value="kb">📚 RAG Knowledge Base Agent</option>
-                <option value="performance">⚡ Performance Analyzer</option>
+                <option value="deployments" disabled={!canInvokeAgents}>🚀 Code Deployment Agent{canInvokeAgents ? '' : ' 🔒'}</option>
+                <option value="kb" disabled={!canInvokeAgents}>📚 RAG Knowledge Base Agent{canInvokeAgents ? '' : ' 🔒'}</option>
+                <option value="performance" disabled={!canInvokeAgents}>⚡ Performance Analyzer{canInvokeAgents ? '' : ' 🔒'}</option>
+                <option value="cloning" disabled={!canInvokeAgents}>🧬 EBS Cloning Agent{canInvokeAgents ? '' : ' 🔒'}</option>
+                <option value="patching" disabled={!canInvokeAgents}>🩹 EBS Patching Agent{canInvokeAgents ? '' : ' 🔒'}</option>
                 <option value="finance" disabled>💸 Cash Management Agent (Soon)</option>
                 <option value="purchasing" disabled>🛒 Purchasing PO Agent (Soon)</option>
               </select>
+              {!canInvokeAgents && (
+                <span className="agent-locked-note" title="Your role can use chat but cannot invoke agents.">
+                  🔒 Chat only — agents require Admin/DBA role
+                </span>
+              )}
             </div>
             <h4 className="chat-header-title">
               {activeSession ? `·  ${activeSession.title || 'New Conversation'}` : ''}
@@ -579,9 +522,14 @@ export default function ChatLayout({ setAuthToken }) {
               <div className="user-dropdown-menu">
                 <div className="user-dropdown-header">
                   <strong>{user.username || 'Nagendra Palla'}</strong>
-                  <span className="user-role-badge">Administrator</span>
+                  <span className="user-role-badge">{roleLabel}</span>
                 </div>
                 <div className="dropdown-divider" />
+                {canAdminConsole && (
+                  <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowAdmin(true); }}>
+                    <ShieldCheck size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Admin Console
+                  </button>
+                )}
                 <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setSettingsTab('servers'); setShowSettingsModal(true); }}>
                   <Server size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />SSH Server Connections
                 </button>
@@ -590,6 +538,9 @@ export default function ChatLayout({ setAuthToken }) {
                 </button>
                 <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setSettingsTab('llm'); setShowSettingsModal(true); }}>
                   <Cpu size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />AI Model Settings
+                </button>
+                <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setPwError(''); setPwSuccess(''); setPwOld(''); setPwNew(''); setPwConfirm(''); setShowChangePw(true); }}>
+                  <KeyRound size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Change Password
                 </button>
                 <div className="dropdown-divider" />
                 <button className="dropdown-item logout" onClick={handleLogout}>
@@ -824,10 +775,53 @@ export default function ChatLayout({ setAuthToken }) {
         <PerformanceAgent onClose={() => { setShowPerformance(false); setActiveAgent('diagnostic'); }} />
       )}
       {showDeployments && (
-        <DeploymentCenter 
-          onClose={() => { setShowDeployments(false); setSelectedHistoryRunId(null); setActiveAgent('diagnostic'); }} 
+        <DeploymentCenter
+          onClose={() => { setShowDeployments(false); setSelectedHistoryRunId(null); setActiveAgent('diagnostic'); }}
           preselectedRunId={selectedHistoryRunId}
         />
+      )}
+      {showCloning && (
+        <CloneCenter onClose={() => { setShowCloning(false); setActiveAgent('diagnostic'); }} />
+      )}
+      {showPatching && (
+        <PatchCenter onClose={() => { setShowPatching(false); setActiveAgent('diagnostic'); }} />
+      )}
+      {showAdmin && <AdminConsole onClose={() => setShowAdmin(false)} role={role} currentUser={user} />}
+
+      {showChangePw && (
+        <div className="settings-modal-overlay" onMouseDown={() => setShowChangePw(false)}>
+          <div className="settings-modal-container" style={{ maxWidth: '420px' }} onMouseDown={e => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <h3><KeyRound size={16} style={{ verticalAlign: 'middle', marginRight: 8 }} />Change Password</h3>
+              <button className="settings-modal-close" onClick={() => setShowChangePw(false)}>×</button>
+            </div>
+            <form onSubmit={handleChangePassword} className="stab-editor-form" style={{ padding: '1.2rem' }}>
+              {pwError && <div className="auth-alert error" style={{ marginBottom: '0.8rem' }}>{pwError}</div>}
+              {pwSuccess && <div className="auth-alert success" style={{ marginBottom: '0.8rem' }}>{pwSuccess}</div>}
+              <div className="settings-form-group">
+                <label>Current Password</label>
+                <input type="password" value={pwOld} onChange={e => setPwOld(e.target.value)}
+                  placeholder="••••••••" required autoFocus />
+              </div>
+              <div className="settings-form-group" style={{ marginTop: '0.7rem' }}>
+                <label>New Password</label>
+                <input type="password" value={pwNew} onChange={e => setPwNew(e.target.value)}
+                  placeholder="At least 4 characters" required />
+              </div>
+              <div className="settings-form-group" style={{ marginTop: '0.7rem' }}>
+                <label>Confirm New Password</label>
+                <input type="password" value={pwConfirm} onChange={e => setPwConfirm(e.target.value)}
+                  placeholder="Re-enter new password" required />
+              </div>
+              <div className="stab-form-actions" style={{ marginTop: '1.1rem' }}>
+                <button type="button" className="btn-outline stab-sm-btn" onClick={() => setShowChangePw(false)}>Close</button>
+                <button type="submit" className="btn-primary stab-sm-btn" disabled={pwSaving}>
+                  {pwSaving ? 'Saving…' : 'Update Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {showSettingsModal && (
@@ -841,13 +835,13 @@ export default function ChatLayout({ setAuthToken }) {
             <div className="settings-tabs-wrapper">
               <button
                 className={`settings-tab-btn ${settingsTab === 'servers' ? 'active' : ''}`}
-                onClick={() => { setIsAddingSrv(false); setSettingsTab('servers'); }}
+                onClick={() => setSettingsTab('servers')}
               >
                 🖥️ SSH Servers
               </button>
               <button
                 className={`settings-tab-btn ${settingsTab === 'environments' ? 'active' : ''}`}
-                onClick={() => { setIsAddingEnv(false); setSettingsTab('environments'); }}
+                onClick={() => setSettingsTab('environments')}
               >
                 🌍 Environments
               </button>
@@ -866,124 +860,13 @@ export default function ChatLayout({ setAuthToken }) {
                 <div className="settings-tab-content">
                   <div className="stab-list-header">
                     <span className="stab-list-title">SSH / Application Server Profiles</span>
-                    {!isAddingSrv && (
-                      <button className="btn-primary stab-add-btn"
-                        onClick={() => { setEditingSrvIndex(null); resetSrvForm(); setIsAddingSrv(true); }}>
-                        ➕ Add Server
-                      </button>
-                    )}
                   </div>
-
-                  {isAddingSrv && (
-                    <form onSubmit={handleSaveServer} className="stab-editor-form">
-                      <p className="stab-form-title">
-                        {editingSrvIndex !== null ? '✏️ Edit Server Connection' : '➕ New Server Connection'}
-                      </p>
-                      <div className="stab-form-grid">
-                        <div className="settings-form-group">
-                          <label>Connection Name</label>
-                          <input type="text" value={srvFormName} onChange={e => setSrvFormName(e.target.value)}
-                            placeholder="e.g. DEV Application Node" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>Hostname / IP Address</label>
-                          <input type="text" value={srvFormHostname} onChange={e => setSrvFormHostname(e.target.value)}
-                            placeholder="e.g. dev-ebs.corp.local" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>SSH Port</label>
-                          <input type="number" value={srvFormPort} onChange={e => setSrvFormPort(e.target.value)}
-                            placeholder="22" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>SSH Username</label>
-                          <input type="text" value={srvFormUsername} onChange={e => setSrvFormUsername(e.target.value)}
-                            placeholder="e.g. applmgr" required />
-                        </div>
-                        <div className="settings-form-group" style={{ gridColumn: 'span 2' }}>
-                          <label>SSH Password / Passphrase</label>
-                          <input type="password" value={srvFormPassword} onChange={e => setSrvFormPassword(e.target.value)}
-                            placeholder="••••••••••••" />
-                        </div>
-
-                        {/* Server Type */}
-                        <div className="settings-form-group" style={{ gridColumn: 'span 2' }}>
-                          <label>Server Type</label>
-                          <div className="srv-type-radio-group">
-                            <label className="srv-type-radio">
-                              <input type="radio" name="srv_type" value="application"
-                                checked={srvFormType === 'application'}
-                                onChange={() => setSrvFormType('application')} />
-                              <span className="srv-type-label">
-                                <span className="srv-type-icon">⚙️</span>
-                                <span>
-                                  <strong>Application Server</strong>
-                                  <small>Web (OHS), Forms, Concurrent Manager</small>
-                                </span>
-                              </span>
-                            </label>
-                            <label className="srv-type-radio">
-                              <input type="radio" name="srv_type" value="database"
-                                checked={srvFormType === 'database'}
-                                onChange={() => setSrvFormType('database')} />
-                              <span className="srv-type-label">
-                                <span className="srv-type-icon">🗄️</span>
-                                <span>
-                                  <strong>Database Server</strong>
-                                  <small>Oracle DB node (sqlplus, RMAN)</small>
-                                </span>
-                              </span>
-                            </label>
-                          </div>
-                        </div>
-
-                        {/* App services checkboxes — only when Application */}
-                        {srvFormType === 'application' && (
-                          <div className="settings-form-group" style={{ gridColumn: 'span 2' }}>
-                            <label>Application Services on This Node</label>
-                            <div className="srv-services-group">
-                              <label className="srv-service-check">
-                                <input type="checkbox"
-                                  checked={Object.values(srvFormServices).every(Boolean)}
-                                  onChange={e => setSrvFormServices({ web: e.target.checked, forms: e.target.checked, concurrent: e.target.checked })} />
-                                All Services
-                              </label>
-                              <label className="srv-service-check">
-                                <input type="checkbox" checked={srvFormServices.web}
-                                  onChange={e => setSrvFormServices(p => ({ ...p, web: e.target.checked }))} />
-                                Web (OHS / Apache)
-                              </label>
-                              <label className="srv-service-check">
-                                <input type="checkbox" checked={srvFormServices.forms}
-                                  onChange={e => setSrvFormServices(p => ({ ...p, forms: e.target.checked }))} />
-                                Oracle Forms
-                              </label>
-                              <label className="srv-service-check">
-                                <input type="checkbox" checked={srvFormServices.concurrent}
-                                  onChange={e => setSrvFormServices(p => ({ ...p, concurrent: e.target.checked }))} />
-                                Concurrent Manager
-                              </label>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="stab-form-actions">
-                        <button type="button" className="btn-outline stab-sm-btn"
-                          onClick={() => { setIsAddingSrv(false); setEditingSrvIndex(null); resetSrvForm(); }}>
-                          Cancel
-                        </button>
-                        <button type="submit" className="btn-primary stab-sm-btn">
-                          Save Connection
-                        </button>
-                      </div>
-                    </form>
-                  )}
+                  <p className="stab-managed-note">🔒 Managed centrally by your administrator in the <strong>Admin Console</strong>.</p>
 
                   <div className="stab-list">
                     {serverConnections.length === 0
                       ? <p className="stab-empty">No SSH servers configured yet.</p>
-                      : serverConnections.map((s, i) => (
+                      : serverConnections.map((s) => (
                         <div key={s.name} className="stab-list-item">
                           <div className="stab-item-left">
                             <div className="stab-item-name">
@@ -1003,10 +886,6 @@ export default function ChatLayout({ setAuthToken }) {
                               )}
                             </div>
                           </div>
-                          <div className="stab-item-actions">
-                            <button className="btn-outline stab-sm-btn" onClick={() => handleEditServer(i)}>✏️ Edit</button>
-                            <button className="btn-outline stab-sm-btn stab-del-btn" onClick={() => handleDeleteServer(i)}>🗑️</button>
-                          </div>
                         </div>
                       ))
                     }
@@ -1019,67 +898,13 @@ export default function ChatLayout({ setAuthToken }) {
                 <div className="settings-tab-content">
                   <div className="stab-list-header">
                     <span className="stab-list-title">Oracle EBS Environments & DB Credentials</span>
-                    {!isAddingEnv && (
-                      <button className="btn-primary stab-add-btn"
-                        onClick={() => { setEditingEnvIndex(null); resetEnvForm(); setIsAddingEnv(true); }}>
-                        ➕ Add Environment
-                      </button>
-                    )}
                   </div>
-
-                  {isAddingEnv && (
-                    <form onSubmit={handleSaveEnv} className="stab-editor-form">
-                      <p className="stab-form-title">
-                        {editingEnvIndex !== null ? '✏️ Edit Environment' : '➕ New Environment'}
-                      </p>
-                      <div className="stab-form-grid">
-                        <div className="settings-form-group" style={{ gridColumn: 'span 2' }}>
-                          <label>Environment Name</label>
-                          <input type="text" value={envFormName} onChange={e => setEnvFormName(e.target.value)}
-                            placeholder="e.g. DEV, UAT, PROD" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>Oracle DB Hostname</label>
-                          <input type="text" value={envFormDbHost} onChange={e => setEnvFormDbHost(e.target.value)}
-                            placeholder="e.g. dev-db.corp.local" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>DB Port</label>
-                          <input type="number" value={envFormDbPort} onChange={e => setEnvFormDbPort(e.target.value)}
-                            placeholder="1521" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>SID / Service Name</label>
-                          <input type="text" value={envFormDbSid} onChange={e => setEnvFormDbSid(e.target.value)}
-                            placeholder="e.g. EBSDEV" required />
-                        </div>
-                        <div className="settings-form-group">
-                          <label>DB Schema Username</label>
-                          <input type="text" value={envFormDbUser} onChange={e => setEnvFormDbUser(e.target.value)}
-                            placeholder="e.g. apps" required />
-                        </div>
-                        <div className="settings-form-group" style={{ gridColumn: 'span 2' }}>
-                          <label>DB Schema Password</label>
-                          <input type="password" value={envFormDbPassword} onChange={e => setEnvFormDbPassword(e.target.value)}
-                            placeholder="••••••••••••" />
-                        </div>
-                      </div>
-                      <div className="stab-form-actions">
-                        <button type="button" className="btn-outline stab-sm-btn"
-                          onClick={() => { setIsAddingEnv(false); setEditingEnvIndex(null); resetEnvForm(); }}>
-                          Cancel
-                        </button>
-                        <button type="submit" className="btn-primary stab-sm-btn">
-                          Save Environment
-                        </button>
-                      </div>
-                    </form>
-                  )}
+                  <p className="stab-managed-note">🔒 Managed centrally by your administrator in the <strong>Admin Console</strong>. Database passwords are encrypted server-side.</p>
 
                   <div className="stab-list">
                     {environments.length === 0
                       ? <p className="stab-empty">No environments configured yet.</p>
-                      : environments.map((env, i) => (
+                      : environments.map((env) => (
                         <div key={env.name} className="stab-list-item">
                           <div className="stab-item-left">
                             <div className="stab-item-name">
@@ -1090,10 +915,6 @@ export default function ChatLayout({ setAuthToken }) {
                               {env.db_user}@{env.db_host}:{env.db_port}
                               {env.db_sid && <span className="stab-services-tag">SID: {env.db_sid}</span>}
                             </div>
-                          </div>
-                          <div className="stab-item-actions">
-                            <button className="btn-outline stab-sm-btn" onClick={() => handleEditEnv(i)}>✏️ Edit</button>
-                            <button className="btn-outline stab-sm-btn stab-del-btn" onClick={() => handleDeleteEnv(i)}>🗑️</button>
                           </div>
                         </div>
                       ))
@@ -1150,6 +971,18 @@ export default function ChatLayout({ setAuthToken }) {
                             </span>
                           </span>
                         </label>
+                        <label className="srv-type-radio">
+                          <input type="radio" name="llm_provider" value="gemini"
+                            checked={llmProvider === 'gemini'}
+                            onChange={() => { setLlmProvider('gemini'); setLlmModel(''); }} />
+                          <span className="srv-type-label">
+                            <span className="srv-type-icon">✨</span>
+                            <span>
+                              <strong>Google (Gemini)</strong>
+                              <small>Gemini 2.0 Flash, 1.5 Pro</small>
+                            </span>
+                          </span>
+                        </label>
                       </div>
                     </div>
 
@@ -1178,16 +1011,14 @@ export default function ChatLayout({ setAuthToken }) {
                         </div>
                       )}
 
-                      {/* API Key — cloud providers */}
+                      {/* API keys for cloud providers are managed centrally by an
+                          administrator (encrypted, server-side) — not entered here. */}
                       {llmProvider !== 'ollama' && (
                         <div className="settings-form-group" style={{ gridColumn: 'span 2' }}>
-                          <label>API Key</label>
-                          <input
-                            type="password"
-                            value={llmApiKey}
-                            onChange={e => setLlmApiKey(e.target.value)}
-                            placeholder={llmProvider === 'openai' ? 'sk-...' : 'sk-ant-...'}
-                          />
+                          <p className="stab-managed-note">
+                            🔒 The API key for <strong>{llmProvider}</strong> is configured by your administrator
+                            in the <strong>Admin Console</strong> and applied automatically.
+                          </p>
                         </div>
                       )}
                     </div>

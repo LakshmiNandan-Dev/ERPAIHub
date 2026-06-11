@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Activity, X, ChevronDown, ChevronRight, Loader2, Upload } from 'lucide-react';
+import api from '../../api';
 import './PerformanceAgent.css';
 
 const AREA_META = {
@@ -36,12 +37,17 @@ const EFFICIENCY_META = [
 ];
 
 export default function PerformanceAgent({ onClose }) {
-  const environments = (() => {
-    try { return JSON.parse(localStorage.getItem('ebs_environments') || '[]'); } catch { return []; }
-  })();
+  // Admin-managed environments (read-only; no secrets) from /config
+  const [environments, setEnvironments] = useState([]);
+  const [selectedEnv, setSelectedEnv] = useState('');
+
+  useEffect(() => {
+    api.get('/config/environments')
+      .then(r => { setEnvironments(r.data); if (r.data[0]?.name) setSelectedEnv(r.data[0].name); })
+      .catch(() => {});
+  }, []);
 
   // ── Shared state ──────────────────────────────────────────────────────────────
-  const [selectedEnv, setSelectedEnv] = useState(environments[0]?.name || '');
   const [phase, setPhase]             = useState('');
   const [analysisText, setAnalysisText] = useState('');
   const [status, setStatus]           = useState('idle');
@@ -119,7 +125,6 @@ export default function PerformanceAgent({ onClose }) {
       return {
         'X-LLM-Provider': llm.provider  || 'ollama',
         'X-LLM-Model':    llm.model     || '',
-        'X-LLM-Api-Key':  llm.api_key   || '',
         'X-LLM-Base-Url': llm.base_url  || '',
       };
     } catch { return { 'X-LLM-Provider': 'ollama' }; }

@@ -264,6 +264,16 @@
   white-space: nowrap;
 }
 
+.agent-locked-note {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--border-color);
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+}
+
 .agent-select-dropdown {
   background: rgba(30, 41, 59, 0.75);
   color: var(--text-primary);
@@ -1486,3 +1496,15 @@
 }
 
 
+
+/* Admin-managed (read-only) settings note */
+.stab-managed-note {
+  font-size: 0.78rem;
+  color: #8aa0c0;
+  background: rgba(46, 116, 181, 0.08);
+  border: 1px solid rgba(46, 116, 181, 0.25);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  margin: 0 0 0.8rem;
+}
+.stab-managed-note strong { color: #cfdcf0; }

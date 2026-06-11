@@ -10,15 +10,31 @@ import re
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 
-from .auth import get_current_user
-from .. import models, llm_service
+from .auth import get_current_user, require_agent_access
+from .. import models, llm_service, database, config_service, telemetry
 
 router = APIRouter(prefix="/performance", tags=["Performance Agent"])
 
 ALL_AREAS = ["wait_events", "top_sql", "memory", "locks", "tablespace", "concurrent_manager", "statistics"]
+
+
+def _record_perf_tokens(user, provider, model, messages, full_analysis, usage):
+    """Fire-and-forget token telemetry for a performance analysis run."""
+    try:
+        prompt_text = "".join(m.get("content", "") for m in messages)
+        prompt_tokens = usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text)
+        completion_tokens = usage.get("completion_tokens") or telemetry.est_tokens("".join(full_analysis))
+        asyncio.get_event_loop().run_in_executor(
+            None, telemetry.record_llm,
+            user.id, user.username, "performance.analyze", provider, model,
+            prompt_tokens, completion_tokens, len(prompt_text),
+        )
+    except Exception:
+        pass
 
 
 class PerformanceRequest(BaseModel):
@@ -268,12 +284,14 @@ def _build_prompt(env: str, diagnostics: dict) -> list:
 async def analyze_performance(
     payload: PerformanceRequest,
     request: Request,
-    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_agent_access),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
+    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
 
     env   = payload.environment or "EBS"
     areas = payload.analysis_areas or ALL_AREAS
@@ -307,14 +325,16 @@ async def analyze_performance(
 
         messages = _build_prompt(env, diagnostics)
         full_analysis: list[str] = []
+        usage: dict = {}
         try:
-            async for token in llm_service.stream_tokens(messages, provider, model, api_key, base_url):
+            async for token in llm_service.stream_tokens(messages, provider, model, api_key, base_url, usage=usage):
                 full_analysis.append(token)
                 yield _sse({"type": "analysis_token", "content": token})
         except Exception as exc:
             yield _sse({"type": "error", "content": f"AI analysis failed: {exc}"})
             return
 
+        _record_perf_tokens(current_user, provider, model, messages, full_analysis, usage)
         yield _sse({"type": "analysis_complete", "content": "".join(full_analysis)})
         yield "data: [DONE]\n\n"
 
@@ -616,12 +636,14 @@ class AWRCompareRequest(BaseModel):
 async def awr_compare(
     payload: AWRCompareRequest,
     request: Request,
-    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_agent_access),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
+    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
     env = payload.environment or "EBS"
 
     async def stream():
@@ -662,12 +684,14 @@ async def awr_upload(
     file1: UploadFile = File(...),
     file2: Optional[UploadFile] = File(None),
     environment: str = Form(default="EBS"),
-    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_agent_access),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
+    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
 
     content1 = (await file1.read()).decode("utf-8", errors="replace")
     parsed1  = _parse_awr_report(content1)

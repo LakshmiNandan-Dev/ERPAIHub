@@ -26,6 +26,13 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     restart: always
+    environment:
+      # Keep the model resident so requests skip a cold reload and can reuse the
+      # previous prompt's KV cache (default is only 5m). "-1" = keep forever.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Serve multiple requests concurrently and keep more than one model warm.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-4}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
     ports:
       - "11434:11434"
     volumes:
@@ -47,6 +54,26 @@ services:
     environment:
       DATABASE_URL: postgresql://aiuser:aipassword@postgres:5432/erpai_hub
       OLLAMA_URL: http://ollama:11434
+      # Used to encrypt admin-managed secrets (SSH/DB passwords, LLM API keys) at rest.
+      # Override with a strong random value in production.
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
+      # Where the SSO callback redirects the browser back to after login
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # Redis for live telemetry (connected users, counters, open-stream gauge)
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Reinforce the Ollama keep-alive on each request (see ollama service).
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      # Exact-match cache (Redis) for deterministic background completions.
+      LLM_CACHE_ENABLED: ${LLM_CACHE_ENABLED:-1}
+      LLM_CACHE_TTL: ${LLM_CACHE_TTL:-86400}
+      # Semantic cache (ChromaDB) for repeated standalone questions.
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-1}
+      SEMANTIC_CACHE_THRESHOLD: ${SEMANTIC_CACHE_THRESHOLD:-0.95}
+      SEMANTIC_CACHE_TTL: ${SEMANTIC_CACHE_TTL:-21600}
+      # Query-embedding + RAG-retrieval cache (Redis; version-stamped on index/delete).
+      RAG_CACHE_ENABLED: ${RAG_CACHE_ENABLED:-1}
+      RAG_CACHE_TTL: ${RAG_CACHE_TTL:-3600}
+      EMBED_CACHE_TTL: ${EMBED_CACHE_TTL:-86400}
     ports:
       - "8000:8000"
     volumes:
@@ -55,6 +82,8 @@ services:
       postgres:
         condition: service_healthy
       ollama:
+        condition: service_started
+      redis:
         condition: service_started
 
   # ── React Frontend ────────────────────────────────────────

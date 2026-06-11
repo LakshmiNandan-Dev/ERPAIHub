@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 import json
 import asyncio
 import time
-from .. import database, schemas, models, rag_service, rlaif_service, llm_service
+import re as _re
+from .. import database, schemas, models, rag_service, rlaif_service, llm_service, config_service, telemetry, semantic_cache, llm_guard_service
 from .auth import get_current_user
 
 router = APIRouter(
@@ -53,8 +54,124 @@ def get_ebs_fallback_response(query: str) -> str:
     )
 
 
-def _build_ollama_messages(messages, message_content: str, rag_context: str) -> list:
+_MAX_HISTORY_MESSAGES = 20   # recent turns kept verbatim
+_COMPRESS_THRESHOLD   = 40   # total messages before compression triggers
+
+# ── Rule-based key-fact extractor ─────────────────────────────────────────────
+
+_ENV_RE  = _re.compile(r'\b(DEV|UAT2?|PROD)\b')
+_FILE_RE = _re.compile(r'\b[\w./-]+\.(?:pls|plb|fmb|fmx|ldt|sql|sh|wft|xml)\b', _re.IGNORECASE)
+_ERR_RE  = _re.compile(r'\b(?:ORA|PLS|APP)-\d{4,6}\b')
+_CMD_RE  = _re.compile(r'\b(?:sqlplus|fndload|frmcmp(?:_batch)?|wfload|adop|adadmin|adpatch|xmlimporter)\b', _re.IGNORECASE)
+
+
+def _extract_key_facts(messages) -> str:
+    envs, files, errors, cmds = set(), set(), set(), set()
+    for msg in messages:
+        text = msg.content if hasattr(msg, 'content') else msg.get('content', '')
+        envs.update(_ENV_RE.findall(text))
+        files.update(m.lower() for m in _FILE_RE.findall(text))
+        errors.update(_ERR_RE.findall(text))
+        cmds.update(m.lower() for m in _CMD_RE.findall(text))
+    if not any([envs, files, errors, cmds]):
+        return ""
+    lines = ["**Auto-extracted EBS context:**"]
+    if envs:   lines.append(f"- Environments: {', '.join(sorted(envs))}")
+    if files:  lines.append(f"- Files: {', '.join(sorted(files))}")
+    if errors: lines.append(f"- Errors seen: {', '.join(sorted(errors))}")
+    if cmds:   lines.append(f"- Commands used: {', '.join(sorted(cmds))}")
+    return "\n".join(lines)
+
+
+# ── LLM-based history compression ─────────────────────────────────────────────
+
+async def _maybe_compress_session(
+    session: models.ChatSession,
+    all_messages: list,
+    db,
+    provider: str,
+    model: str,
+    api_key: str,
+    base_url: str,
+) -> str:
+    """
+    When history exceeds _COMPRESS_THRESHOLD, summarize the old messages into a
+    compact context block (key facts + LLM narrative summary) and cache it on the
+    session row.  Returns the block to inject, or "" if history is still short.
+    """
+    if len(all_messages) <= _COMPRESS_THRESHOLD:
+        return ""
+
+    old_messages  = all_messages[:-_MAX_HISTORY_MESSAGES]
+    last_old_id   = old_messages[-1].id
+
+    # Re-use existing summary if it already covers these messages
+    if (
+        session.summarized_through_id
+        and session.summarized_through_id >= last_old_id
+        and session.context_summary
+    ):
+        return session.context_summary
+
+    key_facts = _extract_key_facts(old_messages)
+
+    # Cap the text sent to the summarizer so small models don't choke
+    convo_lines = []
+    for m in old_messages[-30:]:
+        convo_lines.append(f"{m.role.upper()}: {m.content[:300]}")
+    convo_text = "\n".join(convo_lines)
+
+    summary_prompt = [
+        {"role": "system", "content": (
+            "You are a concise Oracle EBS assistant. Summarize the conversation "
+            "below in 3-5 sentences covering: the user's goal, files/packages "
+            "discussed, environments mentioned, problems encountered, and decisions "
+            "made. Be factual — do not add anything not in the text."
+        )},
+        {"role": "user", "content": f"Conversation to summarize:\n\n{convo_text}"},
+    ]
+
+    llm_summary = ""
+    try:
+        loop = asyncio.get_event_loop()
+        llm_summary = await loop.run_in_executor(
+            None,
+            lambda: llm_service.complete_sync(
+                messages=summary_prompt,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+            ),
+        )
+    except Exception as exc:
+        print(f"[Memory] Summary LLM call failed: {exc}")
+
+    parts = []
+    if key_facts:
+        parts.append(key_facts)
+    if llm_summary:
+        parts.append(f"**Earlier conversation summary:**\n{llm_summary.strip()}")
+
+    combined = "\n\n".join(parts) if parts else ""
+
+    if combined:
+        session.context_summary = combined
+        session.summarized_through_id = last_old_id
+        try:
+            db.commit()
+        except Exception as exc:
+            print(f"[Memory] Failed to persist summary: {exc}")
+
+    return combined
+
+
+def _build_ollama_messages(messages, message_content: str, rag_context: str, context_block: str = "") -> list:
     """Build the full Ollama messages list with system prompt and chat history."""
+    # Sliding window — keep only the most recent messages verbatim
+    if len(messages) > _MAX_HISTORY_MESSAGES:
+        messages = messages[-_MAX_HISTORY_MESSAGES:]
+
     system_content = (
         "You are an expert Oracle E-Business Suite (EBS) developer assistant. "
         "Help developers with PL/SQL package compilation, SQL script execution, ADOP patching, FNDLOAD data uploads, "
@@ -63,9 +180,15 @@ def _build_ollama_messages(messages, message_content: str, rag_context: str) -> 
         "When a question is ambiguous, ask for clarification rather than guessing."
     )
     system_prompt = {"role": "system", "content": system_content}
-    
+
     ollama_msgs = []
-    # Add conversation history up to the second-to-last message
+
+    # Inject compressed context from older messages (only when history was trimmed)
+    if context_block:
+        ollama_msgs.append({"role": "user", "content": f"[EARLIER CONVERSATION CONTEXT]\n{context_block}\n[END EARLIER CONTEXT]"})
+        ollama_msgs.append({"role": "assistant", "content": "Understood. I have noted the earlier conversation context and will use it to inform my answers."})
+
+    # Add recent messages verbatim up to the second-to-last
     for msg in messages[:-1]:
         ollama_msgs.append({"role": msg.role, "content": msg.content})
         
@@ -182,6 +305,11 @@ async def stream_message(
     llm_model    = request.headers.get("X-LLM-Model") or None
     llm_api_key  = request.headers.get("X-LLM-Api-Key") or None
     llm_base_url = request.headers.get("X-LLM-Base-Url") or None
+    # Resolve the API key (and model/base_url fallbacks) from the admin-managed
+    # credential store when the browser didn't supply one.
+    llm_provider, llm_model, llm_api_key, llm_base_url = config_service.resolve_llm(
+        llm_provider, llm_model, llm_api_key, llm_base_url, db, agent="chat"
+    )
     # 1. Verify session
     session = db.query(models.ChatSession).filter(
         models.ChatSession.id == session_id,
@@ -200,6 +328,38 @@ async def stream_message(
     )
     db.add(user_message)
     db.commit()
+
+    # 2.5. Classify the message once — shared by all downstream gates
+    # (LLM Guard, RAG, semantic cache, RLAIF, history compression).
+    _cleaned = message_data.content.strip().lower().rstrip("?.,!")
+    is_simple_query = (
+        len(_cleaned) < 25
+        or len(_cleaned.split()) <= 3
+        or _cleaned in {"hi", "hello", "hey", "good morning", "good afternoon",
+                        "good evening", "thanks", "thank you", "ok", "okay",
+                        "yes", "no", "sure", "great", "got it", "understood"}
+    )
+
+    # 2.5a. LLM Guard — input scan (skipped for simple/short messages)
+    if not is_simple_query:
+        _guard_in = await asyncio.get_event_loop().run_in_executor(
+            None, llm_guard_service.scan_input, message_data.content
+        )
+        if _guard_in.blocked:
+            _block_msg = (
+                f"🛡️ **Content Safety Block**\n\n"
+                f"Your message was flagged by the **{_guard_in.scanner}** scanner "
+                f"(risk score: {_guard_in.risk_score:.2f}).\n\n"
+                "Please rephrase your request without potentially unsafe content."
+            )
+            async def _blocked_input_stream():
+                yield f"data: {json.dumps(_block_msg)}\n\n"
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(
+                _blocked_input_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
     # 2.5. Retrieve chat history to detect previous interview loops
     history = db.query(models.ChatMessage).filter(
@@ -446,18 +606,13 @@ async def stream_message(
         models.ChatMessage.session_id == session_id
     ).order_by(models.ChatMessage.created_at.asc()).all()
 
-    # 5. RAG context — skip for short/conversational messages
-    rag_context = ""
-    cleaned_query = message_data.content.strip().lower().rstrip("?.,!")
-    word_count = len(cleaned_query.split())
-    is_simple_query = (
-        len(cleaned_query) < 25
-        or word_count <= 3
-        or cleaned_query in {"hi", "hello", "hey", "good morning", "good afternoon",
-                             "good evening", "thanks", "thank you", "ok", "okay",
-                             "yes", "no", "sure", "great", "got it", "understood"}
+    # 4.5. Compress old history into a summary block when session grows long
+    context_block = await _maybe_compress_session(
+        session, messages, db, llm_provider, llm_model, llm_api_key, llm_base_url
     )
 
+    # 5. RAG context — skip for simple queries (is_simple_query computed at step 2.5)
+    rag_context = ""
     if not is_simple_query:
         try:
             rag_context = rag_service.query_rag(message_data.content)
@@ -467,23 +622,81 @@ async def stream_message(
 
     print(f"[RAG] skipped={is_simple_query} | context={bool(rag_context)} ({len(rag_context)} chars)")
 
-    llm_messages = _build_ollama_messages(messages, message_data.content, rag_context)
+    # 5.5. Semantic cache — only safe for standalone, context-free questions:
+    # the first turn of a session (no prior conversation the answer depends on),
+    # substantive (not a greeting), not a deploy/interview flow, and with no RAG
+    # context (so indexing new docs can't silently stale a cached answer).
+    # Matching is scoped by provider+model, so different models never share answers.
+    semantic_eligible = (
+        not is_simple_query
+        and not rag_context
+        and not is_deploy
+        and not was_interviewing
+        and msg_count == 1
+    )
+    if semantic_eligible:
+        cached_answer = semantic_cache.lookup(message_data.content, llm_provider, llm_model)
+        if cached_answer:
+            async def cache_stream():
+                # Persist the assistant turn so session history stays consistent.
+                new_db = database.SessionLocal()
+                try:
+                    new_db.add(models.ChatMessage(
+                        session_id=session_id, role="assistant",
+                        content=cached_answer, agent_run_id=message_data.agent_run_id,
+                    ))
+                    new_db.commit()
+                except Exception as e:
+                    print(f"[SemanticCache] save failed: {e}")
+                finally:
+                    new_db.close()
+
+                telemetry.stream_open(current_user.id)
+                banner = "⚡ *Instant answer — semantically matched a previous question.*\n\n"
+                yield f"data: {json.dumps(banner)}\n\n"
+                for word in cached_answer.split(" "):
+                    yield f"data: {json.dumps(word + ' ')}\n\n"
+                    await asyncio.sleep(0.005)
+                # A cache hit consumes no model tokens — record the request truthfully.
+                background_tasks.add_task(
+                    telemetry.record_llm,
+                    user_id=current_user.id, username=current_user.username,
+                    endpoint="chat.stream.cache_hit", provider=llm_provider, model=llm_model,
+                    prompt_tokens=0, completion_tokens=0, context_chars=len(cached_answer),
+                )
+                telemetry.stream_close(current_user.id)
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                cache_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+    llm_messages = _build_ollama_messages(messages, message_data.content, rag_context, context_block)
+
+    # Telemetry: measure the assembled context size and capture token usage.
+    prompt_text = "".join(m.get("content", "") for m in llm_messages)
+    context_chars = len(prompt_text)
+    usage: dict = {}
 
     # 6. Stream generator — yields SSE lines
     async def event_stream():
         full_content = []
+        telemetry.stream_open(current_user.id)
         if rag_context:
             rag_label = "📚 **RAG Knowledge Base Agent Invoked!** Searching indexed reference documentation... \n\n"
             full_content.append(rag_label)
             yield f"data: {json.dumps(rag_label)}\n\n"
 
         refusal_detected = False
+        got_token = False
         try:
             buffering = True
             buffer_text = ""
 
             async for token in llm_service.stream_tokens(
-                llm_messages, llm_provider, llm_model, llm_api_key, llm_base_url
+                llm_messages, llm_provider, llm_model, llm_api_key, llm_base_url, usage=usage
             ):
                 if buffering:
                     buffer_text += token
@@ -495,9 +708,11 @@ async def stream_message(
                             refusal_detected = True
                             break
                         full_content.append(buffer_text)
+                        got_token = True
                         yield f"data: {json.dumps(buffer_text)}\n\n"
                 else:
                     full_content.append(token)
+                    got_token = True
                     yield f"data: {json.dumps(token)}\n\n"
 
             # Flush buffer if stream ended before 40 chars
@@ -508,6 +723,7 @@ async def stream_message(
                     refusal_detected = True
                 else:
                     full_content.append(buffer_text)
+                    got_token = True
                     yield f"data: {json.dumps(buffer_text)}\n\n"
 
             if refusal_detected:
@@ -517,14 +733,44 @@ async def stream_message(
                 for word in fallback_msg.split(" "):
                     yield f"data: {json.dumps(word + ' ')}\n\n"
                     await asyncio.sleep(0.02)
+            elif not got_token:
+                # Model connected but returned nothing — surface a clear warning.
+                full_content.clear()
+                warn = (
+                    f"The '{llm_provider}' model returned an empty response. "
+                    "The selected model may be unavailable or not pulled. "
+                    "Check the model in AI Model settings, or ask an administrator to verify the provider."
+                )
+                yield f"data: {json.dumps({'error': warn})}\n\n"
+                return
 
         except Exception as e:
+            # Surface connection / auth / model-availability failures to the user.
+            full_content.clear()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
         finally:
             # Save complete response to DB regardless
             if full_content:
                 assembled = "".join(full_content)
+
+                # LLM Guard — output scan (skipped for simple queries, same gate as input)
+                if not is_simple_query:
+                    _guard_out = await asyncio.get_event_loop().run_in_executor(
+                        None, llm_guard_service.scan_output, message_data.content, assembled
+                    )
+                    if _guard_out.blocked:
+                        _filtered_notice = (
+                            f"⚠️ **Response filtered by content-safety scanner "
+                            f"({_guard_out.scanner})**.\n\n"
+                            "The model output contained potentially sensitive content "
+                            "and has been redacted. Please rephrase your question."
+                        )
+                        assembled = _filtered_notice
+                        yield f"data: {json.dumps(_filtered_notice)}\n\n"
+                    elif _guard_out.text and _guard_out.text != assembled:
+                        assembled = _guard_out.text
+
                 new_db = database.SessionLocal()
                 try:
                     assistant_message = models.ChatMessage(
@@ -535,7 +781,14 @@ async def stream_message(
                     )
                     new_db.add(assistant_message)
                     new_db.commit()
-                    
+
+                    # Populate the semantic cache with this fresh, standalone answer
+                    # (skip refusals/fallbacks — only genuine model output is cached).
+                    if semantic_eligible and got_token and not refusal_detected:
+                        semantic_cache.store(
+                            message_data.content, assembled, llm_provider, llm_model
+                        )
+
                     # Trigger background RLAIF Audit — only for substantive queries
                     if not is_simple_query:
                         background_tasks.add_task(
@@ -549,11 +802,24 @@ async def stream_message(
                             api_key=llm_api_key,
                             base_url=llm_base_url,
                         )
+                    # Telemetry: record token usage + context size for this turn
+                    background_tasks.add_task(
+                        telemetry.record_llm,
+                        user_id=current_user.id,
+                        username=current_user.username,
+                        endpoint="chat.stream",
+                        provider=llm_provider,
+                        model=llm_model,
+                        prompt_tokens=usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text),
+                        completion_tokens=usage.get("completion_tokens") or telemetry.est_tokens(assembled),
+                        context_chars=context_chars,
+                    )
                 except Exception as save_err:
                     print(f"[Stream] Failed to save assistant message: {save_err}")
                 finally:
                     new_db.close()
 
+            telemetry.stream_close(current_user.id)
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(

@@ -8,11 +8,12 @@ import re
 import asyncio
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Any, List
 
-from .auth import get_current_user
-from .. import models, llm_service
+from .auth import get_current_user, require_agent_access
+from .. import models, llm_service, database, config_service
 from .deployments import extract_deployment_steps
 
 router = APIRouter(prefix="/deployments/agent", tags=["Deployment Agent"])
@@ -198,18 +199,24 @@ async def _llm(messages: list, provider: str, model: str, api_key: str, base_url
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _call)
 
+    elif provider == "gemini":
+        def _call():
+            return llm_service.complete_sync(
+                messages=messages, provider="gemini", model=model, api_key=api_key,
+            )
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _call)
+
     else:  # ollama
         base = (base_url or os.getenv("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
         def _call():
-            with httpx.Client(timeout=180.0) as c:
-                r = c.post(f"{base}/api/chat", json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 600},
-                })
-                r.raise_for_status()
-                return r.json().get("message", {}).get("content", "")
+            # Routed through complete_sync for shared Ollama plumbing + keep_alive.
+            # use_cache=False: a ReAct turn samples (temp 0.2) and must stay live so
+            # the agent can't get stuck replaying a cached reasoning step.
+            return llm_service.complete_sync(
+                messages=messages, provider="ollama", model=model, base_url=base,
+                max_tokens=600, temperature=0.2, use_cache=False,
+            )
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _call)
 
@@ -279,10 +286,11 @@ async def _fetch_confluence_page(url: str, token: str) -> str:
     return text
 
 
-def _next_missing_field(ctx: dict) -> str:
+def _next_missing_field(ctx: dict, has_git: bool = False, has_confluence: bool = False) -> str:
     """Return the next field that still needs to be collected, in collection order."""
-    # If a Confluence URL was given, collect token before anything else
-    if ctx.get("confluence_url") and not ctx.get("confluence_token"):
+    # If a Confluence URL was given, collect token before anything else —
+    # unless an admin-managed Confluence credential is configured (auto-use).
+    if ctx.get("confluence_url") and not ctx.get("confluence_token") and not has_confluence:
         return "confluence_token"
     # Instructions must be present (either pasted or fetched from Confluence)
     if not ctx.get("instructions"):
@@ -292,8 +300,10 @@ def _next_missing_field(ctx: dict) -> str:
     if not ctx.get("source_type"):   return "source_type"
     if ctx.get("source_type") == "git" and not ctx.get("git_url"):    return "git_url"
     if ctx.get("source_type") == "git" and not ctx.get("git_branch"): return "git_branch"
-    # git_token is None = not yet asked; "" = user said public/none
-    if ctx.get("source_type") == "git" and ctx.get("git_token") is None: return "git_token"
+    # git_token: None = not yet asked; "" = public. Skipped when an admin-managed
+    # Git credential is configured (resolved server-side at deploy time).
+    if (ctx.get("source_type") == "git" and ctx.get("git_token") is None and not has_git):
+        return "git_token"
     return ""
 
 def _fallback_question(field: str, servers: list, envs: list) -> str:
@@ -359,6 +369,9 @@ async def react_loop(
     model: str,
     api_key: str,
     base_url: str,
+    has_git_cred: bool = False,
+    has_confluence_cred: bool = False,
+    resolve_confluence=None,
 ):
     """
     Async generator — yields SSE chunks until user input is needed or agent finishes.
@@ -388,9 +401,21 @@ async def react_loop(
     last_action     = None
     same_action_cnt = 0
 
+    cred_note_parts = []
+    if has_confluence_cred:
+        cred_note_parts.append(
+            "- Confluence access is configured centrally. When the user gives a Confluence URL, "
+            "call fetch_confluence_page immediately and do NOT ask for confluence_token."
+        )
+    if has_git_cred:
+        cred_note_parts.append(
+            "- Git access is configured centrally. Do NOT ask for git_token."
+        )
+    cred_note = ("\nCentral credentials:\n" + "\n".join(cred_note_parts)) if cred_note_parts else ""
+
     for _ in range(MAX_ITER):
         # Build messages with a clean context snapshot each turn
-        system   = _SYSTEM_PROMPT.format(tools=_TOOLS_DOC, context=_ctx_str())
+        system   = _SYSTEM_PROMPT.format(tools=_TOOLS_DOC, context=_ctx_str()) + cred_note
         messages = [{"role": "system", "content": system}] + history
 
         try:
@@ -409,7 +434,7 @@ async def react_loop(
         if not action:
             consecutive_bad += 1
             if consecutive_bad >= 2:
-                field = _next_missing_field(context)
+                field = _next_missing_field(context, has_git_cred, has_confluence_cred)
                 if field:
                     q = _fallback_question(field, available_servers, available_environments)
                     yield _sse({"type": "question", "content": q, "field": field})
@@ -430,7 +455,7 @@ async def react_loop(
 
         if same_action_cnt >= 2:
             # Model is looping on the same tool — force progress
-            field = _next_missing_field(context)
+            field = _next_missing_field(context, has_git_cred, has_confluence_cred)
             q     = _fallback_question(field, available_servers, available_environments) if field else "How can I help?"
             yield _sse({"type": "question", "content": q, "field": field})
             yield _sse({"type": "needs_input", "history": history, "context": context})
@@ -481,6 +506,10 @@ async def react_loop(
                 cf_token = parsed.get("token", cf_token)
             except (json.JSONDecodeError, TypeError):
                 pass
+
+            # Auto-use the admin-managed Confluence token when none was supplied.
+            if cf_url and not cf_token and resolve_confluence:
+                cf_token = resolve_confluence(cf_url) or ""
 
             if not cf_url or not cf_token:
                 # Missing — ask for whichever is absent
@@ -573,7 +602,7 @@ async def react_loop(
             yield _sse({"type": "observation", "content": obs})
 
     # Fallback if loop exhausted
-    field = _next_missing_field(context)
+    field = _next_missing_field(context, has_git_cred, has_confluence_cred)
     q     = _fallback_question(field, available_servers, available_environments) if field else "Please try again."
     yield _sse({"type": "question", "content": q, "field": field})
     yield _sse({"type": "needs_input", "history": history, "context": context})
@@ -585,12 +614,19 @@ async def react_loop(
 async def agent_chat(
     payload: AgentChatRequest,
     request: Request,
-    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_agent_access),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model", "")
     api_key  = request.headers.get("X-LLM-Api-Key", "")
     base_url = request.headers.get("X-LLM-Base-Url", "")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model or None, api_key or None, base_url or None, db, agent="deployment"
+    )
+    model = model or ""
+    api_key = api_key or ""
+    base_url = base_url or ""
 
     context = payload.context.model_dump()
     history = [m.model_dump() for m in payload.history]
@@ -600,6 +636,17 @@ async def agent_chat(
         {k: v for k, v in s.items() if k != "password"}
         for s in payload.available_servers
     ]
+
+    # Admin-managed Git/Confluence credentials → auto-use (agent stops asking)
+    has_git_cred = config_service.has_integration(db, "git")
+    has_confluence_cred = config_service.has_integration(db, "confluence")
+
+    def _resolve_confluence(url: str):
+        cdb = database.SessionLocal()
+        try:
+            return config_service.resolve_confluence_auth(url, cdb)
+        finally:
+            cdb.close()
 
     async def stream():
         async for chunk in react_loop(
@@ -612,6 +659,9 @@ async def agent_chat(
             model=model or llm_service.DEFAULT_MODELS.get(provider, "llama3.2:1b"),
             api_key=api_key,
             base_url=base_url,
+            has_git_cred=has_git_cred,
+            has_confluence_cred=has_confluence_cred,
+            resolve_confluence=_resolve_confluence,
         ):
             yield chunk
         yield "data: [DONE]\n\n"

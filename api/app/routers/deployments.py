@@ -8,8 +8,8 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from .. import database, schemas, models, rag_service
-from .auth import get_current_user
+from .. import database, schemas, models, rag_service, llm_service
+from .auth import get_current_user, require_agent_access
 
 router = APIRouter(
     prefix="/deployments",
@@ -17,7 +17,6 @@ router = APIRouter(
 )
 
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_URL = f"{_OLLAMA_BASE}/api/chat"
 OLLAMA_MODEL = "llama3.2:1b"
 OLLAMA_EXTRACT_TIMEOUT = 30.0
 
@@ -249,27 +248,19 @@ def extract_deployment_steps(content: str) -> list:
     )
 
     try:
-        with httpx.Client(timeout=OLLAMA_EXTRACT_TIMEOUT) as client:
-            response = client.post(
-                OLLAMA_URL,
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.0,
-                        "num_predict": 400
-                    }
-                }
-            )
-            if response.status_code == 200:
-                res_content = response.json().get('message', {}).get('content', '').strip()
-                if res_content.startswith("```"):
-                    res_content = re.sub(r'^```(json)?\n', '', res_content)
-                    res_content = re.sub(r'\n```$', '', res_content)
-                parsed = json.loads(res_content.strip())
-                if isinstance(parsed, list) and len(parsed) > 0:
-                    return parsed
+        # Deterministic (temp 0) → benefits from the exact-match response cache:
+        # re-running the same deployment doc skips re-extraction.
+        res_content = llm_service.complete_sync(
+            messages=[{"role": "user", "content": prompt}],
+            provider="ollama", model=OLLAMA_MODEL, base_url=_OLLAMA_BASE,
+            max_tokens=400, temperature=0.0, timeout=OLLAMA_EXTRACT_TIMEOUT,
+        ).strip()
+        if res_content.startswith("```"):
+            res_content = re.sub(r'^```(json)?\n', '', res_content)
+            res_content = re.sub(r'\n```$', '', res_content)
+        parsed = json.loads(res_content.strip())
+        if isinstance(parsed, list) and len(parsed) > 0:
+            return parsed
     except Exception:
         pass
 
@@ -556,6 +547,50 @@ def _execute_sql_directly(deployment, steps: list, db) -> None:
             shutil.rmtree(local_clone, ignore_errors=True)
 
 
+def _resolve_managed_credentials(deployment, db) -> None:
+    """
+    If the deployment references an admin-managed environment / SSH server, load
+    and decrypt their credentials into the in-memory deployment object.
+
+    Uses set_committed_value so the decrypted secrets are populated for execution
+    WITHOUT marking the columns dirty — they are never flushed back to
+    deployment_runs, so no plaintext is persisted at rest.
+    """
+    from sqlalchemy.orm.attributes import set_committed_value
+    from .. import crypto
+
+    if getattr(deployment, "environment_id", None):
+        env = db.query(models.EbsEnvironment).filter(
+            models.EbsEnvironment.id == deployment.environment_id
+        ).first()
+        if env:
+            set_committed_value(deployment, "db_host", env.db_host)
+            set_committed_value(deployment, "db_port", env.db_port or 1521)
+            set_committed_value(deployment, "db_sid", env.db_sid)
+            set_committed_value(deployment, "db_user", env.db_user)
+            set_committed_value(deployment, "db_password", crypto.decrypt(env.db_password_enc))
+            # Inherit the environment's linked SSH server if the run didn't pick one
+            if not deployment.ssh_server_id and env.ssh_server_id:
+                set_committed_value(deployment, "ssh_server_id", env.ssh_server_id)
+
+    if getattr(deployment, "ssh_server_id", None):
+        srv = db.query(models.SshServer).filter(
+            models.SshServer.id == deployment.ssh_server_id
+        ).first()
+        if srv:
+            set_committed_value(deployment, "ssh_host", srv.hostname)
+            set_committed_value(deployment, "ssh_port", srv.port or 22)
+            set_committed_value(deployment, "ssh_username", srv.username)
+            set_committed_value(deployment, "ssh_password", crypto.decrypt(srv.password_enc))
+
+    # Git: inject an admin-managed PAT for the repo host when none was supplied.
+    if getattr(deployment, "git_repo_url", None) and not deployment.git_token:
+        from .. import config_service
+        _, git_token = config_service.resolve_git_token(deployment.git_repo_url, db)
+        if git_token:
+            set_committed_value(deployment, "git_token", git_token)
+
+
 def execute_deployment_task(deployment_id: int):
     """Background task: extracts steps from source content and executes them against the target instance."""
     db = database.SessionLocal()
@@ -568,6 +603,9 @@ def execute_deployment_task(deployment_id: int):
         # Abort if cancelled between scheduling and execution start
         if deployment.status == "cancelled":
             return
+
+        # Resolve admin-managed env/server credentials (in-memory only)
+        _resolve_managed_credentials(deployment, db)
 
         deployment.status = "extracting"
         db.commit()
@@ -841,7 +879,7 @@ def trigger_deployment(
     deployment_data: schemas.DeploymentCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_agent_access)
 ):
     """Creates a new deployment run and schedules the agent to deploy it in the background."""
     deployment = models.DeploymentRun(
@@ -850,6 +888,8 @@ def trigger_deployment(
         source_doc_name=deployment_data.source_doc_name,
         source_content=deployment_data.source_content,
         target_instance=deployment_data.target_instance,
+        environment_id=deployment_data.environment_id,
+        ssh_server_id=deployment_data.ssh_server_id,
         git_repo_url=deployment_data.git_repo_url,
         git_branch=deployment_data.git_branch,
         git_token=deployment_data.git_token,
@@ -899,6 +939,43 @@ def get_deployment(
     if not deployment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment run not found")
     return deployment
+
+
+@router.get("/{id}/artifact")
+def download_deployment_artifact(
+    id: int,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Generate and download a portable artifact bundle (zip) for a deployment:
+    a runnable deploy.sh with the full step sequence, the apps password as a
+    variable, a README and a manifest. Intended for completed runs so the bundle
+    can be copied and re-run manually on another instance.
+    """
+    from fastapi import Response
+    from .. import artifact_service
+
+    deployment = db.query(models.DeploymentRun).filter(
+        models.DeploymentRun.id == id,
+        models.DeploymentRun.user_id == current_user.id
+    ).first()
+    if not deployment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deployment run not found")
+
+    steps = db.query(models.DeploymentStep).filter(
+        models.DeploymentStep.deployment_id == id
+    ).order_by(models.DeploymentStep.step_number).all()
+    if not steps:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="This deployment has no steps to package.")
+
+    zip_bytes, filename = artifact_service.build_artifact_zip(deployment, steps)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{id}/steps", response_model=List[schemas.DeploymentStepOut])
@@ -971,7 +1048,7 @@ def retry_deployment(
     id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_agent_access)
 ):
     """Clears existing steps and re-runs a failed or cancelled deployment from scratch."""
     deployment = db.query(models.DeploymentRun).filter(
@@ -1002,7 +1079,7 @@ def migrate_deployment(
     payload: schemas.MigrateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_agent_access)
 ):
     """
     Clone a completed deployment and re-run it against a different target instance.
@@ -1040,6 +1117,10 @@ def migrate_deployment(
         source_doc_name=f"Migrated from {old_run.target_instance}: {old_run.source_doc_name or 'Deployment'}",
         source_content=old_run.source_content,
         target_instance=payload.target_instance,
+        # Managed-resource references (credentials resolved at execution time).
+        # SSH server: override or inherit from the source run.
+        environment_id=payload.environment_id,
+        ssh_server_id=payload.ssh_server_id or old_run.ssh_server_id,
         # Git — identical to source
         git_repo_url=old_run.git_repo_url,
         git_branch=old_run.git_branch,

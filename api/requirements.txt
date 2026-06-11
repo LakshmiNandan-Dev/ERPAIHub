@@ -19,3 +19,6 @@ python-multipart
 duckduckgo-search
 paramiko
 oracledb
+cryptography
+redis
+llm-guard

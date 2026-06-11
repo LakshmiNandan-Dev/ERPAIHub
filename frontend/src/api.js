@@ -12,12 +12,13 @@ api.interceptors.request.use(
       config.headers['Authorization'] = `Bearer ${token}`;
     }
 
-    // Attach LLM provider config so the backend uses the user's chosen model
+    // Attach LLM provider selection so the backend uses the chosen model.
+    // The API key itself is NOT sent from the browser — it is resolved
+    // server-side from the admin-managed (encrypted) credential store.
     try {
       const llm = JSON.parse(localStorage.getItem('llm_config') || '{}');
       if (llm.provider) config.headers['X-LLM-Provider'] = llm.provider;
       if (llm.model)    config.headers['X-LLM-Model']    = llm.model;
-      if (llm.api_key)  config.headers['X-LLM-Api-Key']  = llm.api_key;
       if (llm.base_url) config.headers['X-LLM-Base-Url'] = llm.base_url;
     } catch { /* ignore */ }
 

@@ -126,7 +126,6 @@ export default function DeploymentAgent({ serverConnections, environments, onDep
           'Authorization': `Bearer ${token}`,
           ...(llm.provider  && { 'X-LLM-Provider': llm.provider }),
           ...(llm.model     && { 'X-LLM-Model':    llm.model }),
-          ...(llm.api_key   && { 'X-LLM-Api-Key':  llm.api_key }),
           ...(llm.base_url  && { 'X-LLM-Base-Url': llm.base_url }),
         },
         body: JSON.stringify({
@@ -251,15 +250,9 @@ export default function DeploymentAgent({ serverConnections, environments, onDep
       git_repo_url:    ctx.source_type === 'git' ? ctx.git_url    || null : null,
       git_branch:      ctx.source_type === 'git' ? ctx.git_branch || 'main' : null,
       git_token:       ctx.source_type === 'git' ? ctx.git_token  || null : null,
-      ssh_host:        server?.hostname   || null,
-      ssh_port:        server?.port       || 22,
-      ssh_username:    server?.username   || null,
-      ssh_password:    server?.password   || null,
-      db_host:         envProfile.db_host     || null,
-      db_port:         envProfile.db_port     || 1521,
-      db_sid:          envProfile.db_sid      || null,
-      db_user:         envProfile.db_user     || null,
-      db_password:     envProfile.db_password || null,
+      // Reference admin-managed resources; credentials resolved & decrypted server-side
+      environment_id:  envProfile.id || null,
+      ssh_server_id:   server?.id || null,
     };
 
     try {

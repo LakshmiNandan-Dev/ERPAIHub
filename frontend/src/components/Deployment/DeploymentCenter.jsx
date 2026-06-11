@@ -18,28 +18,21 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
   const [migrateServerIdx, setMigrateServerIdx] = useState(0);
   const [migrateSubmitting, setMigrateSubmitting] = useState(false);
 
-  // Read configured environments from localStorage (set via Settings modal)
-  const [environments] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('ebs_environments') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  // Admin-managed environments & SSH servers (no secrets — resolved server-side)
+  const [environments, setEnvironments] = useState([]);
+  const [serverConnections, setServerConnections] = useState([]);
 
-  // Read configured SSH server connections from localStorage
-  const [serverConnections] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('ebs_server_connections') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  useEffect(() => {
+    api.get('/config/environments')
+      .then(r => { setEnvironments(r.data); if (r.data[0]?.name) setTargetInstance(r.data[0].name); })
+      .catch(() => {});
+    api.get('/config/servers').then(r => setServerConnections(r.data)).catch(() => {});
+  }, []);
 
   // Form fields
   const [sourceDocType, setSourceDocType] = useState('confluence');
   const [sourceDocName, setSourceDocName] = useState('EBS AP Custom Supplier Patch');
-  const [targetInstance, setTargetInstance] = useState(environments[0]?.name || 'DEV');
+  const [targetInstance, setTargetInstance] = useState('DEV');
   const [selectedServerIndex, setSelectedServerIndex] = useState(0);
   const [useGit, setUseGit] = useState(false);
   const [gitRepoUrl, setGitRepoUrl] = useState('');
@@ -118,17 +111,11 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
         source_doc_name: sourceDocName,
         source_content: sourceContent,
         target_instance: targetInstance,
+        // Reference admin-managed resources; credentials are resolved & decrypted server-side
+        environment_id: envProfile.id || null,
+        ssh_server_id: srvProfile?.id || null,
         git_repo_url: useGit ? gitRepoUrl : null,
         git_branch: useGit ? gitBranch : null,
-        ssh_host: srvProfile?.hostname || null,
-        ssh_port: srvProfile?.port || 22,
-        ssh_username: srvProfile?.username || null,
-        ssh_password: srvProfile?.password || null,
-        db_host: envProfile.db_host     || null,
-        db_port: envProfile.db_port     || 1521,
-        db_sid:  envProfile.db_sid      || null,
-        db_user: envProfile.db_user     || null,
-        db_password: envProfile.db_password || null,
       });
       const run = res.data;
       setSelectedRun(run);
@@ -193,6 +180,26 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
     }
   };
 
+  /** Download a portable artifact bundle (deploy.sh + README + manifest) as a zip. */
+  const downloadArtifact = async (runId) => {
+    setActionLoading(`artifact-${runId}`);
+    try {
+      const res = await api.get(`/deployments/${runId}/artifact`, { responseType: 'blob' });
+      const cd = res.headers['content-disposition'] || '';
+      const m = cd.match(/filename="?([^"]+)"?/);
+      const filename = m ? m[1] : `oraebs_deploy_${runId}.zip`;
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/zip' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to generate the deployment artifact.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   /** Open the migration confirmation modal. */
   const handleMigrate = (run, targetEnvName) => {
     // Default SSH server: try to match by hostname against source run, else index 0
@@ -214,17 +221,10 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
     try {
       const res = await api.post(`/deployments/${run.id}/migrate`, {
         target_instance: targetEnvName,
-        // Target environment DB credentials
-        db_host:     envProfile.db_host     || null,
-        db_port:     envProfile.db_port     || 1521,
-        db_sid:      envProfile.db_sid      || null,
-        db_user:     envProfile.db_user     || null,
-        db_password: envProfile.db_password || null,
-        // SSH — use selected server (or null to inherit source server on backend)
-        ssh_host:     srvProfile?.hostname || null,
-        ssh_port:     srvProfile?.port     || 22,
-        ssh_username: srvProfile?.username || null,
-        ssh_password: srvProfile?.password || null,
+        // Reference admin-managed resources; credentials resolved server-side.
+        environment_id: envProfile.id || null,
+        // null ssh_server_id => backend inherits the source run's server
+        ssh_server_id: srvProfile?.id || null,
       });
       setMigrateModal(null);
       const newRun = res.data;
@@ -531,6 +531,18 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
                       </button>
                     )}
                     {selectedRun.status === 'completed' && (
+                      <button
+                        className="btn-outline run-action-btn"
+                        onClick={() => downloadArtifact(selectedRun.id)}
+                        disabled={actionLoading === `artifact-${selectedRun.id}`}
+                        title="Download a portable deploy.sh artifact bundle (passwords as variables)"
+                      >
+                        {actionLoading === `artifact-${selectedRun.id}`
+                          ? <Loader2 size={13} className="spin-icon" />
+                          : <><Download size={13} style={{ marginRight: '0.3rem', verticalAlign: 'middle' }} />Download Artifact</>}
+                      </button>
+                    )}
+                    {selectedRun.status === 'completed' && (
                       <div className="migrate-group">
                         <span className="migrate-label">
                           <Rocket size={12} style={{ marginRight: '0.25rem', verticalAlign: 'middle' }} />
@@ -632,6 +644,18 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
                       <button className="btn-outline" onClick={() => selectRunById(run.id, 'terminal')}>
                         <Terminal size={13} style={{ marginRight: '0.35rem', verticalAlign: 'middle' }} />View Logs
                       </button>
+                      {run.status === 'completed' && (
+                        <button
+                          className="btn-outline"
+                          onClick={() => downloadArtifact(run.id)}
+                          disabled={actionLoading === `artifact-${run.id}`}
+                          title="Download a portable deploy.sh artifact bundle (passwords as variables)"
+                        >
+                          {actionLoading === `artifact-${run.id}`
+                            ? <Loader2 size={13} className="spin-icon" />
+                            : <><Download size={13} style={{ marginRight: '0.35rem', verticalAlign: 'middle' }} />Artifact</>}
+                        </button>
+                      )}
                       <button
                         className="btn-outline delete-run-btn"
                         onClick={() => handleDeleteRun(run.id)}
@@ -680,7 +704,8 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
       {migrateModal && (() => {
         const { run, targetEnvName } = migrateModal;
         const envProfile = environments.find(e => e.name === targetEnvName) || {};
-        const hasDbCreds = !!(envProfile.db_user && envProfile.db_password);
+        // Password is held encrypted server-side; presence of a managed env with a DB user is enough.
+        const hasDbCreds = !!(envProfile.id && envProfile.db_user);
         return (
           <div className="migrate-modal-overlay" onClick={() => !migrateSubmitting && setMigrateModal(null)}>
             <div className="migrate-modal" onClick={e => e.stopPropagation()}>
@@ -723,7 +748,7 @@ export default function DeploymentCenter({ onClose, preselectedRunId }) {
                 ) : (
                   <div className="migrate-warn">
                     ⚠️ No DB credentials configured for <strong>{targetEnvName}</strong>.
-                    Add them in <strong>Settings → Environments &amp; Database</strong>.
+                    An administrator can add them in <strong>Admin Console → Environments</strong>.
                   </div>
                 )}
 

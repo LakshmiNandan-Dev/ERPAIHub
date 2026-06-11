@@ -312,12 +312,30 @@ npm run dev
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql://aiuser:aipassword@localhost:5432/erpai_hub` | PostgreSQL connection |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
+| `APP_SECRET_KEY` | `dev-insecure-change-me` | Passphrase used to encrypt admin-managed secrets (SSH/DB passwords, LLM API keys) at rest. **Set a strong random value in production** — changing it later makes previously stored secrets unreadable. |
 
 Create `api/.env` for local dev — the app picks it up automatically via `python-dotenv`:
 
 ```env
 DATABASE_URL=postgresql://aiuser:aipassword@localhost:5432/erpai_hub
 OLLAMA_URL=http://localhost:11434
+APP_SECRET_KEY=change-me-to-a-long-random-string
+```
+
+### Admin Console
+
+The **first registered user automatically becomes an administrator**. Admins get an
+**Admin Console** (user-menu → Admin Console) to centrally manage:
+
+- **Users** — create accounts, grant/revoke admin, enable/disable, reset passwords.
+- **SSH Servers** & **Environments** — connection details and credentials, encrypted at rest.
+- **LLM Providers** — API keys for OpenAI / Anthropic / Gemini, encrypted at rest and injected
+  server-side (keys are never sent from the browser).
+
+Promote an existing user to admin from the `api/` directory:
+
+```bash
+python -m scripts.create_admin <username>
 ```
 
 ---
