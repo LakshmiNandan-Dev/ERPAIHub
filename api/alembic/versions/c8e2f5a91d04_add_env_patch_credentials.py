@@ -9,6 +9,11 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.sql import quoted_name
+
+# 'system_user' is a reserved word in PostgreSQL 16+, so the identifier must be
+# quoted; quoted_name(..., True) forces that in both add and drop.
+_SYSTEM_USER = quoted_name('system_user', True)
 
 
 revision: str = 'c8e2f5a91d04'
@@ -18,7 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('ebs_environments', sa.Column('system_user', sa.String(length=100),
+    op.add_column('ebs_environments', sa.Column(_SYSTEM_USER, sa.String(length=100),
                                                 server_default='system', nullable=True))
     op.add_column('ebs_environments', sa.Column('system_password_enc', sa.Text(), nullable=True))
     op.add_column('ebs_environments', sa.Column('weblogic_user', sa.String(length=100),
@@ -32,4 +37,4 @@ def downgrade() -> None:
     op.drop_column('ebs_environments', 'weblogic_password_enc')
     op.drop_column('ebs_environments', 'weblogic_user')
     op.drop_column('ebs_environments', 'system_password_enc')
-    op.drop_column('ebs_environments', 'system_user')
+    op.drop_column('ebs_environments', _SYSTEM_USER)
