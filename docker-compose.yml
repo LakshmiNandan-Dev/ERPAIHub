@@ -66,6 +66,8 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@oraebs.com}
       # Recovery switch: set to 1 to reset the bootstrap admin password on startup.
       BOOTSTRAP_ADMIN_RESET: ${BOOTSTRAP_ADMIN_RESET:-0}
+      # Optional fixed CORS allow-list (comma-separated). Default: any host on :5173.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       # Redis for live telemetry (connected users, counters, open-stream gauge)
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Reinforce the Ollama keep-alive on each request (see ollama service).

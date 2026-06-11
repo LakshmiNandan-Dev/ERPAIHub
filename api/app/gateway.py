@@ -115,13 +115,17 @@ gateway = FastAPI()
 
 gateway.add_middleware(TelemetryMiddleware)
 
-gateway.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS — allow the React frontend's origin. By default accept any host serving
+# the frontend on port 5173 (covers localhost and remote-server IP/hostname
+# deployments) without per-host config. Set CORS_ORIGINS (comma-separated) for a
+# fixed allow-list, e.g. behind a domain / reverse proxy.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_kwargs = dict(allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+if _cors_origins:
+    _cors_kwargs["allow_origins"] = _cors_origins
+else:
+    _cors_kwargs["allow_origin_regex"] = r"https?://[^/]+:5173"
+gateway.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 gateway.include_router(auth.router)
 gateway.include_router(chat.router)

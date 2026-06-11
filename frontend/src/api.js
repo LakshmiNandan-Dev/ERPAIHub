@@ -1,7 +1,15 @@
 import axios from 'axios';
 
+// Resolve the API base URL. Default to the same host the browser loaded the app
+// from, on the API port (8000) — so remote-server deployments work without the
+// hardcoded 127.0.0.1. Override at build time with VITE_API_URL (e.g. behind a
+// reverse proxy or custom domain/port).
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:8000`;
+
 const api = axios.create({
-  baseURL: 'http://127.0.0.1:8000',
+  baseURL: API_BASE_URL,
 });
 
 // Add a request interceptor to attach auth token + LLM provider config
