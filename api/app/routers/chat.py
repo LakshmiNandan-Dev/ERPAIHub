@@ -16,7 +16,6 @@ router = APIRouter(
 import os
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_URL = f"{_OLLAMA_BASE}/api/chat"
-OLLAMA_MODEL = "llama3.2:1b"
 
 
 def get_ebs_fallback_response(query: str) -> str:

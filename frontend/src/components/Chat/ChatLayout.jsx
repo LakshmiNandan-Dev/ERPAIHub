@@ -74,8 +74,11 @@ export default function ChatLayout({ setAuthToken }) {
   const [llmModel, setLlmModel] = useState(_llmStored.model || '');
   const [llmBaseUrl, setLlmBaseUrl] = useState(_llmStored.base_url || 'http://localhost:11434');
 
+  // For Ollama, leave the model blank by default so the server-side credential
+  // (admin-managed) decides the model — the browser no longer pins a tiny model
+  // that would override it. Cloud providers keep a sensible default.
   const LLM_DEFAULTS = {
-    ollama: 'llama3.2:1b', openai: 'gpt-4o-mini',
+    ollama: '', openai: 'gpt-4o-mini',
     anthropic: 'claude-haiku-4-5-20251001', gemini: 'gemini-2.0-flash',
   };
 
@@ -1027,7 +1030,7 @@ export default function ChatLayout({ setAuthToken }) {
                     <div className="llm-active-badge">
                       <span className="llm-active-label">Active:</span>
                       <span className="llm-active-value">
-                        {(() => { try { const c = JSON.parse(localStorage.getItem('llm_config') || '{}'); return c.provider ? `${c.provider} / ${c.model}` : 'ollama / llama3.2:1b (default)'; } catch { return 'ollama / llama3.2:1b (default)'; } })()}
+                        {(() => { try { const c = JSON.parse(localStorage.getItem('llm_config') || '{}'); return c.provider ? `${c.provider} / ${c.model || '(server default)'}` : 'ollama / (server default)'; } catch { return 'ollama / (server default)'; } })()}
                       </span>
                     </div>
 

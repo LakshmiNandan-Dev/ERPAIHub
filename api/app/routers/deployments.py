@@ -17,7 +17,7 @@ router = APIRouter(
 )
 
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = "llama3.2:1b"
+OLLAMA_MODEL = llm_service.DEFAULT_MODELS["ollama"]  # follows OLLAMA_DEFAULT_MODEL
 OLLAMA_EXTRACT_TIMEOUT = 30.0
 
 IN_PROGRESS_STATUSES = {"extracting", "downloading", "deploying"}

@@ -94,7 +94,7 @@ def seed_default_llm_provider():
         db.add(models.LlmCredential(
             provider="ollama",
             label="Local Ollama (bundled)",
-            model=DEFAULT_MODELS.get("ollama", "llama3.2:1b"),
+            model=DEFAULT_MODELS["ollama"],
             base_url=os.getenv("OLLAMA_URL", _OLLAMA_BASE),
             api_key_enc=None,
             is_default=True,

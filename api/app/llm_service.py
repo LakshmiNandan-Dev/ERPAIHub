@@ -15,8 +15,11 @@ _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
 # default; set per-request as belt-and-suspenders. "30m", "-1" (forever), etc.
 _OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 
+# Single source of truth for each provider's default model. The local Ollama
+# default is env-driven so a deployment can pick a model that fits its hardware
+# (e.g. OLLAMA_DEFAULT_MODEL=qwen2.5:7b) without code changes.
 DEFAULT_MODELS = {
-    "ollama":    "llama3.2:1b",
+    "ollama":    os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"),
     "openai":    "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5-20251001",
     "gemini":    "gemini-2.0-flash",

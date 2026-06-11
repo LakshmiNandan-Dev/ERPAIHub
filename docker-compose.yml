@@ -54,6 +54,8 @@ services:
     environment:
       DATABASE_URL: postgresql://aiuser:aipassword@postgres:5432/erpai_hub
       OLLAMA_URL: http://ollama:11434
+      # Default local model used when no per-request/credential model is set.
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_DEFAULT_MODEL:-llama3.1:8b}
       # Used to encrypt admin-managed secrets (SSH/DB passwords, LLM API keys) at rest.
       # Override with a strong random value in production.
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
