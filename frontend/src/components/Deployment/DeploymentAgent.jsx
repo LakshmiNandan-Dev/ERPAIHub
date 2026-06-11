@@ -119,7 +119,7 @@ export default function DeploymentAgent({ serverConnections, environments, onDep
       const token = localStorage.getItem('session_token');
       const llm   = (() => { try { return JSON.parse(localStorage.getItem('llm_config') || '{}'); } catch { return {}; } })();
 
-      const resp = await fetch('http://127.0.0.1:8000/deployments/agent/chat', {
+      const resp = await fetch(`${api.defaults.baseURL}/deployments/agent/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

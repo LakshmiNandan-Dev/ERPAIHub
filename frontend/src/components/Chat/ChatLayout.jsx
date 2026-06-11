@@ -300,7 +300,7 @@ export default function ChatLayout({ setAuthToken }) {
     try {
       const token = localStorage.getItem('session_token');
       const response = await fetch(
-        `http://127.0.0.1:8000/chat/sessions/${activeSession.id}/stream`,
+        `${api.defaults.baseURL}/chat/sessions/${activeSession.id}/stream`,
         {
           method: 'POST',
           headers: {

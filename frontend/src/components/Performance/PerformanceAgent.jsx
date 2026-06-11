@@ -95,7 +95,7 @@ export default function PerformanceAgent({ onClose }) {
     if (activeMode !== 'awr' || !selectedEnv) return;
     setSnapsLoading(true);
     const token = localStorage.getItem('session_token');
-    fetch(`http://127.0.0.1:8000/performance/snapshots?environment=${encodeURIComponent(selectedEnv)}`, {
+    fetch(`${api.defaults.baseURL}/performance/snapshots?environment=${encodeURIComponent(selectedEnv)}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.json())
@@ -175,7 +175,7 @@ export default function PerformanceAgent({ onClose }) {
     });
 
     try {
-      const resp = await fetch('http://127.0.0.1:8000/performance/analyze', {
+      const resp = await fetch(`${api.defaults.baseURL}/performance/analyze`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...getLLMHeaders() },
         body,
@@ -265,7 +265,7 @@ export default function PerformanceAgent({ onClose }) {
 
     const token = localStorage.getItem('session_token');
     try {
-      const resp = await fetch('http://127.0.0.1:8000/performance/awr/compare', {
+      const resp = await fetch(`${api.defaults.baseURL}/performance/awr/compare`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...getLLMHeaders() },
         body: JSON.stringify({
@@ -309,7 +309,7 @@ export default function PerformanceAgent({ onClose }) {
     formData.append('environment', selectedEnv || 'EBS');
 
     try {
-      const resp = await fetch('http://127.0.0.1:8000/performance/awr/upload', {
+      const resp = await fetch(`${api.defaults.baseURL}/performance/awr/upload`, {
         method:  'POST',
         headers: { 'Authorization': `Bearer ${token}`, ...getLLMHeaders() },
         body:    formData,

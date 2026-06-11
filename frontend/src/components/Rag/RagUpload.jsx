@@ -218,7 +218,7 @@ export default function RagUpload({ onClose }) {
   const handleExportDpo = async (type = 'rlhf') => {
     try {
       const token = localStorage.getItem('session_token');
-      const response = await fetch(`http://127.0.0.1:8000/rl/export?type=${type}`, {
+      const response = await fetch(`${api.defaults.baseURL}/rl/export?type=${type}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
