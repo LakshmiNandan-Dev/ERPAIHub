@@ -59,6 +59,13 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
       # Where the SSO callback redirects the browser back to after login
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # First-run admin bootstrap (only created when no such user exists).
+      # Set a strong password in production; change it after first login.
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@oraebs.com}
+      # Recovery switch: set to 1 to reset the bootstrap admin password on startup.
+      BOOTSTRAP_ADMIN_RESET: ${BOOTSTRAP_ADMIN_RESET:-0}
       # Redis for live telemetry (connected users, counters, open-stream gauge)
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Reinforce the Ollama keep-alive on each request (see ollama service).
