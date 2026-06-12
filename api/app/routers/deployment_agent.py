@@ -4,6 +4,7 @@ Each turn: LLM reasons → picks a tool → tool executes → observation fed ba
 The loop pauses when it needs user input (request_user_input / present_plan).
 """
 import json
+import os
 import re
 import asyncio
 from fastapi import APIRouter, Depends, Request
@@ -13,10 +14,24 @@ from pydantic import BaseModel
 from typing import Optional, Any, List
 
 from .auth import get_current_user, require_agent_access
-from .. import models, llm_service, database, config_service
+from .. import models, llm_service, database, config_service, telemetry
 from .deployments import extract_deployment_steps
 
 router = APIRouter(prefix="/deployments/agent", tags=["Deployment Agent"])
+
+# ── Cost controls ──────────────────────────────────────────────────────────────
+# Estimated-token budget for one /chat request (all ReAct turns it triggers).
+# When exhausted the loop stops calling the LLM and falls back to the
+# deterministic next-missing-field question, so the task degrades gracefully
+# instead of burning more tokens.
+AGENT_TOKEN_BUDGET = int(os.getenv("AGENT_TOKEN_BUDGET", "8000"))
+# Max history messages sent to the LLM per turn. The system prompt already
+# carries a full snapshot of collected context, so older turns are redundant;
+# windowing keeps the prompt from growing quadratically over a session.
+AGENT_HISTORY_MAX_MSGS = int(os.getenv("AGENT_HISTORY_MAX_MSGS", "12"))
+# Hard cap on retries per LLM call. Only transient failures (connection,
+# timeout, 429, 5xx) are retried; auth/4xx errors fail immediately.
+AGENT_LLM_MAX_RETRIES = int(os.getenv("AGENT_LLM_MAX_RETRIES", "2"))
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
@@ -341,6 +356,47 @@ def _fallback_question(field: str, servers: list, envs: list) -> str:
     return "What else do you need?"
 
 
+def _is_transient(exc: Exception) -> bool:
+    """
+    True when an LLM call failure is worth retrying: connection problems,
+    timeouts, rate limits (429) and server errors (5xx). Auth/validation
+    errors (other 4xx) are permanent — retrying them only burns time.
+    """
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, llm_service.LLMError):
+        msg = str(exc)
+        m = re.search(r"HTTP (\d{3})", msg)
+        if m:
+            code = int(m.group(1))
+            return code == 429 or code >= 500
+        # LLMError without a status is a connectivity failure
+        # ("Cannot reach …", "connection failed", "Could not reach …")
+        return any(s in msg for s in ("Cannot reach", "connection failed", "Could not reach"))
+    return False
+
+
+def _trim_history(history: list, max_msgs: int = None) -> list:
+    """
+    Window the conversation sent to the LLM to the most recent messages.
+    The full history is still kept (and round-tripped to the client) for the
+    audit trail — only the LLM prompt is trimmed. The window must start on a
+    user message (Anthropic rejects a leading assistant turn).
+    """
+    limit = max_msgs if max_msgs is not None else AGENT_HISTORY_MAX_MSGS
+    if limit <= 0 or len(history) <= limit:
+        return history
+    trimmed = history[-limit:]
+    while trimmed and trimmed[0].get("role") != "user":
+        trimmed = trimmed[1:]
+    return trimmed or history[-1:]
+
+
 def _build_plan_md(context: dict) -> str:
     steps  = context.get("steps") or []
     env    = context.get("environment", "?")
@@ -400,6 +456,7 @@ async def react_loop(
     consecutive_bad = 0   # turns with no valid action
     last_action     = None
     same_action_cnt = 0
+    spent_tokens    = 0   # estimated prompt+completion tokens this request
 
     cred_note_parts = []
     if has_confluence_cred:
@@ -414,15 +471,29 @@ async def react_loop(
     cred_note = ("\nCentral credentials:\n" + "\n".join(cred_note_parts)) if cred_note_parts else ""
 
     for _ in range(MAX_ITER):
+        if spent_tokens >= AGENT_TOKEN_BUDGET:
+            break  # budget exhausted — drop to the deterministic fallback below
+
         # Build messages with a clean context snapshot each turn
         system   = _SYSTEM_PROMPT.format(tools=_TOOLS_DOC, context=_ctx_str()) + cred_note
-        messages = [{"role": "system", "content": system}] + history
+        messages = [{"role": "system", "content": system}] + _trim_history(history)
 
-        try:
-            raw = await _llm(messages, provider, model, api_key, base_url)
-        except Exception as exc:
-            yield _sse({"type": "error", "content": f"LLM error: {exc}"})
-            return
+        raw = None
+        for attempt in range(AGENT_LLM_MAX_RETRIES + 1):
+            try:
+                raw = await _llm(messages, provider, model, api_key, base_url)
+                break
+            except Exception as exc:
+                if attempt >= AGENT_LLM_MAX_RETRIES or not _is_transient(exc):
+                    yield _sse({"type": "error", "content": f"LLM error: {exc}"})
+                    return
+                yield _sse({"type": "thought",
+                            "content": f"LLM call failed ({exc}) — retrying "
+                                       f"({attempt + 1}/{AGENT_LLM_MAX_RETRIES})…"})
+                await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s…
+
+        spent_tokens += sum(telemetry.est_tokens(m.get("content", "")) for m in messages)
+        spent_tokens += telemetry.est_tokens(raw)
 
         thought, action, action_input = _parse_react(raw)
         history.append({"role": "assistant", "content": raw})
