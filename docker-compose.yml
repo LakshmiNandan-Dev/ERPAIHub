@@ -31,8 +31,12 @@ services:
       # previous prompt's KV cache (default is only 5m). "-1" = keep forever.
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       # Serve multiple requests concurrently and keep more than one model warm.
+      # NUM_PARALLEL slots share the context window; raise only with enough RAM/VRAM.
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-4}
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
+      # Requests beyond the parallel slots queue up to this depth, then get 503
+      # (surfaced to the agent as a transient error and retried with backoff).
+      OLLAMA_MAX_QUEUE: ${OLLAMA_MAX_QUEUE:-128}
     ports:
       - "11434:11434"
     volumes:
@@ -85,6 +89,11 @@ services:
       RAG_CACHE_ENABLED: ${RAG_CACHE_ENABLED:-1}
       RAG_CACHE_TTL: ${RAG_CACHE_TTL:-3600}
       EMBED_CACHE_TTL: ${EMBED_CACHE_TTL:-86400}
+      # Deployment-agent cost controls: estimated-token budget per chat request,
+      # history window sent to the LLM, and retry cap for transient LLM failures.
+      AGENT_TOKEN_BUDGET: ${AGENT_TOKEN_BUDGET:-8000}
+      AGENT_HISTORY_MAX_MSGS: ${AGENT_HISTORY_MAX_MSGS:-12}
+      AGENT_LLM_MAX_RETRIES: ${AGENT_LLM_MAX_RETRIES:-2}
     ports:
       - "8000:8000"
     volumes:
