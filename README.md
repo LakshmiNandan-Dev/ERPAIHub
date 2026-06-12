@@ -414,3 +414,9 @@ The `chroma_db` directory is persisted as a Docker volume (`chroma_data`). If th
 
 **Frontend cannot reach the API**
 The frontend calls `http://localhost:8000`. Confirm the API container is running (`docker compose ps`) and that port 8000 is not blocked by a firewall or another process.
+
+---
+
+## License
+
+This project is open source under the [MIT License](LICENSE).
