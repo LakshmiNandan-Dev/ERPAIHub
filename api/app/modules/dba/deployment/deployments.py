@@ -12,7 +12,7 @@ from app.core import database
 from app import schemas, models
 from app.core.rag import rag_service
 from app.core.llm import llm_service
-from app.routers.auth import get_current_user, require_agent_access
+from app.core.auth.auth import get_current_user, require_agent_access
 
 router = APIRouter(
     prefix="/deployments",

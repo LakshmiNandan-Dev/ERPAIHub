@@ -9,7 +9,7 @@ from app.core import database, config_service, telemetry
 from app import schemas, models, rlaif_service
 from app.core.rag import rag_service
 from app.core.llm import llm_service, semantic_cache, llm_guard_service
-from app.routers.auth import get_current_user
+from app.core.auth.auth import get_current_user
 
 router = APIRouter(
     prefix="/chat",
@@ -522,7 +522,7 @@ async def stream_message(
         elif "word" in assembled_content.lower():
             doc_type = "word"
             
-        from app.routers.deployments import execute_deployment_task
+        from app.modules.dba.deployment.deployments import execute_deployment_task
         
         # Pull optional SSH parameters from target settings or user profile config
         ssh_host = localStorage_or_none = None # Loaded dynamically in background thread task if needed

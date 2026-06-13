@@ -5,7 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.bootstrap import run_bootstrap
 from app.core.middleware import TelemetryMiddleware
-from app.routers import auth, chat, rag, rl, deployments, deployment_agent, performance_agent, admin, config, sso, monitoring, cloning, audit, training, patching
+from app.core.auth import auth, sso
+from app.platform_api import chat, rag, admin, config, monitoring, audit
+from app.ml import rl, training
+from app.modules.dba.deployment import deployments, deployment_agent
+from app.modules.dba.performance import performance_agent
+from app.modules.dba.cloning import cloning
+from app.modules.dba.patching import patching
 
 # Provision the schema and seed first-run data (admin, default LLM provider).
 run_bootstrap()

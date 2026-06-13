@@ -14,7 +14,7 @@ from app import schemas, models
 from app.common import utils
 from app.core.llm import llm_service, llm_guard_service
 from app.core.integrations import cred_test
-from app.routers.auth import get_current_admin, require_approver
+from app.core.auth.auth import get_current_admin, require_approver
 
 _ROLES = ("admin", "dba", "user")
 
@@ -441,7 +441,7 @@ def _sso_out(s: models.SsoSettings) -> dict:
 
 @router.get("/sso", response_model=schemas.SsoSettingsOut)
 def get_sso(db: Session = Depends(database.get_db), _: models.User = Depends(get_current_admin)):
-    from app.routers.sso import get_or_create_settings
+    from app.core.auth.sso import get_or_create_settings
     return _sso_out(get_or_create_settings(db))
 
 
@@ -449,7 +449,7 @@ def get_sso(db: Session = Depends(database.get_db), _: models.User = Depends(get
 def update_sso(payload: schemas.SsoSettingsUpdate,
                db: Session = Depends(database.get_db),
                _: models.User = Depends(get_current_admin)):
-    from app.routers.sso import get_or_create_settings
+    from app.core.auth.sso import get_or_create_settings
     s = get_or_create_settings(db)
     data = payload.model_dump(exclude_unset=True)
     if "client_secret" in data:
@@ -588,7 +588,7 @@ def test_integration(cred_id: int,
 def test_sso(db: Session = Depends(database.get_db),
              _: models.User = Depends(get_current_admin)):
     """Validate the saved Entra ID settings (tenant discovery + app credentials)."""
-    from app.routers.sso import get_or_create_settings
+    from app.core.auth.sso import get_or_create_settings
     s = get_or_create_settings(db)
     return cred_test.test_sso(s.tenant_id, s.client_id, crypto.decrypt(s.client_secret_enc))
 

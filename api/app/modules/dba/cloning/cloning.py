@@ -13,7 +13,7 @@ from app.core import database
 from app import models, cloning_service
 from app.core.safety import prod_guard
 from app.core.audit import audit_service
-from app.routers.auth import get_current_user, require_agent_access, require_approver
+from app.core.auth.auth import get_current_user, require_agent_access, require_approver
 
 router = APIRouter(prefix="/cloning", tags=["Cloning Agent"])
 

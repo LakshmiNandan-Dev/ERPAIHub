@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 
 from app import models
 from app.core import telemetry
-from app.routers.auth import get_current_admin
+from app.core.auth.auth import get_current_admin
 
 router = APIRouter(prefix="/admin/monitoring", tags=["Monitoring"])
 

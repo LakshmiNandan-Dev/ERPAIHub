@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core import database
 from app import models
 from app.core.audit import audit_service
-from app.routers.auth import require_approver
+from app.core.auth.auth import require_approver
 
 router = APIRouter(prefix="/admin/audit", tags=["Audit"])
 
