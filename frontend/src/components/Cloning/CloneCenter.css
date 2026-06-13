@@ -1,21 +1,21 @@
 .clone-overlay {
   position: fixed; inset: 0;
-  background: rgba(8, 12, 22, 0.72); backdrop-filter: blur(4px);
+  background: rgba(250, 249, 245, 0.72); backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center; z-index: 1200;
 }
 .clone-container {
   width: min(960px, 94vw); height: min(88vh, 860px);
-  background: #0f1626; border: 1px solid #233049; border-radius: 14px;
-  display: flex; flex-direction: column; overflow: hidden; color: #e6ecf5;
+  background: #FAF9F5; border: 1px solid #E5E2D8; border-radius: 14px;
+  display: flex; flex-direction: column; overflow: hidden; color: #3D3D3A;
   box-shadow: 0 24px 80px rgba(0,0,0,.5);
 }
 .clone-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0.9rem 1.3rem; border-bottom: 1px solid #233049; background: #131c2e;
+  padding: 0.9rem 1.3rem; border-bottom: 1px solid #E5E2D8; background: #FFFFFF;
 }
 .clone-header h3 { margin: 0; font-size: 1.05rem; }
-.clone-sub { font-size: 0.72rem; color: #7184a0; font-weight: 400; margin-left: 0.6rem; }
-.clone-close { background: none; border: none; color: #93a4bd; font-size: 1.4rem; cursor: pointer; }
+.clone-sub { font-size: 0.72rem; color: #73726C; font-weight: 400; margin-left: 0.6rem; }
+.clone-close { background: none; border: none; color: #73726C; font-size: 1.4rem; cursor: pointer; }
 .clone-close:hover { color: #fff; }
 
 .clone-body { flex: 1; overflow: hidden; display: flex; }
@@ -25,13 +25,13 @@
 .clone-msg.user { justify-content: flex-end; }
 .clone-bubble {
   max-width: 80%; padding: 0.6rem 0.85rem; border-radius: 12px; font-size: 0.88rem; line-height: 1.45;
-  background: #18233a; border: 1px solid #243755;
+  background: #FFFFFF; border: 1px solid #E5E2D8;
 }
-.clone-msg.user .clone-bubble { background: linear-gradient(135deg, #2e74b5, #1f4e79); border: none; color: #fff; }
+.clone-msg.user .clone-bubble { background: linear-gradient(135deg, #C15F3C, #C15F3C); border: none; color: #fff; }
 .clone-bubble .md p { margin: 0 0 0.4rem; }
 .clone-bubble .md table { border-collapse: collapse; font-size: 0.8rem; margin: 0.4rem 0; }
-.clone-bubble .md th, .clone-bubble .md td { border: 1px solid #2a3a55; padding: 0.25rem 0.5rem; }
-.clone-bubble .md code { background: #0c1322; padding: 0 0.25rem; border-radius: 4px; }
+.clone-bubble .md th, .clone-bubble .md td { border: 1px solid #E5E2D8; padding: 0.25rem 0.5rem; }
+.clone-bubble .md code { background: #FAF9F5; padding: 0 0.25rem; border-radius: 4px; }
 
 .spin { animation: clspin 1s linear infinite; vertical-align: middle; }
 @keyframes clspin { to { transform: rotate(360deg); } }
@@ -39,7 +39,7 @@
 /* phases */
 .clone-phases { margin-top: 0.6rem; }
 .clone-phase {
-  background: #111a2b; border: 1px solid #243755; border-radius: 9px;
+  background: #FFFFFF; border: 1px solid #E5E2D8; border-radius: 9px;
   margin-bottom: 0.5rem; padding: 0.2rem 0.6rem;
 }
 .clone-phase summary {
@@ -47,41 +47,41 @@
   padding: 0.45rem 0.2rem; font-size: 0.86rem; font-weight: 600; list-style: none;
 }
 .clone-phase summary::-webkit-details-marker { display: none; }
-.clone-phase .ok { color: #5fd08a; }
+.clone-phase .ok { color: #2A7D46; }
 .ph-title { flex: 1; }
 .ph-node {
   font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px;
-  background: #233049; color: #9fb6d6;
+  background: #E5E2D8; color: #73726C;
 }
-.ph-node.source-db, .ph-node.source-apps { background: #1f3a4d; color: #8fd3ff; }
-.ph-node.target-db, .ph-node.target-apps { background: #16361f; color: #84e1a0; }
+.ph-node.source-db, .ph-node.source-apps { background: #FFFFFF; color: #C15F3C; }
+.ph-node.target-db, .ph-node.target-apps { background: #E4F2E7; color: #2A7D46; }
 .ph-cmd, .ph-log {
   white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace;
-  font-size: 0.74rem; background: #0a1120; border: 1px solid #1b2538; border-radius: 6px;
-  padding: 0.5rem 0.6rem; margin: 0.3rem 0; color: #cfe0f5;
+  font-size: 0.74rem; background: #FAF9F5; border: 1px solid #FFFFFF; border-radius: 6px;
+  padding: 0.5rem 0.6rem; margin: 0.3rem 0; color: #3D3D3A;
 }
-.ph-cmd { color: #ffd9a0; }
+.ph-cmd { color: #B27A12; }
 
-.clone-footer { border-top: 1px solid #233049; padding: 0.8rem 1.3rem; background: #131c2e; }
+.clone-footer { border-top: 1px solid #E5E2D8; padding: 0.8rem 1.3rem; background: #FFFFFF; }
 .clone-input-row { display: flex; gap: 0.5rem; }
 .clone-input-row input {
-  flex: 1; background: #0c1322; border: 1px solid #2a3a55; border-radius: 8px;
-  padding: 0.6rem 0.8rem; color: #e6ecf5; font-size: 0.9rem;
+  flex: 1; background: #FAF9F5; border: 1px solid #E5E2D8; border-radius: 8px;
+  padding: 0.6rem 0.8rem; color: #3D3D3A; font-size: 0.9rem;
 }
-.clone-input-row input:focus { outline: none; border-color: #2e74b5; }
+.clone-input-row input:focus { outline: none; border-color: #C15F3C; }
 .clone-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
 .clone-footer .btn-primary, .clone-footer .btn-outline {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1rem;
   border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
 }
-.clone-footer .btn-primary { background: linear-gradient(135deg, #2e74b5, #1f4e79); color: #fff; border: none; }
-.clone-footer .btn-outline { background: none; border: 1px solid #2a3a55; color: #cfdcf0; }
+.clone-footer .btn-primary { background: linear-gradient(135deg, #C15F3C, #C15F3C); color: #fff; border: none; }
+.clone-footer .btn-outline { background: none; border: 1px solid #E5E2D8; color: #3D3D3A; }
 .clone-footer .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
 .clone-blocked { display: flex; flex-direction: column; gap: 0.55rem; }
 .clone-blocked input {
-  width: 100%; background: #0c1322; border: 1px solid #5a2230; border-radius: 8px;
-  padding: 0.55rem 0.75rem; color: #e6ecf5; font-size: 0.88rem;
+  width: 100%; background: #FAF9F5; border: 1px solid #F7E0DC; border-radius: 8px;
+  padding: 0.55rem 0.75rem; color: #3D3D3A; font-size: 0.88rem;
 }
 .clone-blocked input:focus { outline: none; border-color: #b7434f; }
-.clone-noperm { color: #ff9d9d; font-size: 0.82rem; flex: 1; align-self: center; }
+.clone-noperm { color: #BF4A3C; font-size: 0.82rem; flex: 1; align-self: center; }
