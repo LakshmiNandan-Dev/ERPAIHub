@@ -19,6 +19,8 @@ export default function ChatLayout({ setAuthToken }) {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const abortRef = useRef(null);
+  const activeSessionIdRef = useRef(null);
   const [deletingId, setDeletingId] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
@@ -215,6 +217,19 @@ export default function ChatLayout({ setAuthToken }) {
     }
   }, [activeSession]);
 
+  // Track the active session id for async stream guards, and abort an in-flight
+  // response when the user leaves its session — so other sessions stay usable
+  // (the partial reply is saved server-side and reappears on return).
+  useEffect(() => {
+    activeSessionIdRef.current = activeSession?.id ?? null;
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        setLoading(false);
+      }
+    };
+  }, [activeSession?.id]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -284,10 +299,18 @@ export default function ChatLayout({ setAuthToken }) {
 
   const cancelRename = () => setRenamingId(null);
 
+  const handleStop = () => {
+    // Abort the in-flight stream. The connection drops, so the backend
+    // generator is cancelled (Ollama stops generating) and its `finally`
+    // persists whatever was produced so far. The partial reply stays on screen.
+    if (abortRef.current) abortRef.current.abort();
+  };
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!inputMessage.trim() || !activeSession) return;
 
+    const streamSessionId = activeSession.id;
     const userMessage = { role: 'user', content: inputMessage };
     setMessages(prev => [...prev, userMessage]);
     const sentContent = inputMessage;
@@ -296,6 +319,9 @@ export default function ChatLayout({ setAuthToken }) {
 
     // Add an empty assistant bubble that we'll fill token by token
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       const token = localStorage.getItem('session_token');
@@ -307,7 +333,8 @@ export default function ChatLayout({ setAuthToken }) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ content: sentContent })
+          body: JSON.stringify({ content: sentContent }),
+          signal: controller.signal
         }
       );
 
@@ -340,40 +367,55 @@ export default function ChatLayout({ setAuthToken }) {
               });
               break;
             }
-            // Append token to last assistant bubble
-            setMessages(prev => {
-              const msgs = [...prev];
-              msgs[msgs.length - 1] = {
-                ...msgs[msgs.length - 1],
-                content: msgs[msgs.length - 1].content + parsed
-              };
-              return msgs;
-            });
+            // Append token to the assistant bubble — only while the user is
+            // still viewing this stream's session (otherwise it's dropped here
+            // and reappears from the DB on return).
+            if (activeSessionIdRef.current === streamSessionId) {
+              setMessages(prev => {
+                const msgs = [...prev];
+                msgs[msgs.length - 1] = {
+                  ...msgs[msgs.length - 1],
+                  content: msgs[msgs.length - 1].content + parsed
+                };
+                return msgs;
+              });
+            }
           } catch { /* skip malformed lines */ }
         }
       }
 
-      // Update session title in sidebar only when it's still the default placeholder
-      const isDefaultTitle = !activeSession.title || activeSession.title === 'New Conversation';
-      if (isDefaultTitle) {
-        const autoTitle = sentContent.substring(0, 50) + (sentContent.length > 50 ? '...' : '');
-        setSessions(prev => prev.map(s =>
-          s.id === activeSession.id ? { ...s, title: autoTitle } : s
-        ));
-        setActiveSession(prev => ({ ...prev, title: autoTitle }));
+      // Only touch the view if the user is still on this stream's session.
+      if (activeSessionIdRef.current === streamSessionId) {
+        // Update session title in sidebar only when it's still the default placeholder
+        const isDefaultTitle = !activeSession.title || activeSession.title === 'New Conversation';
+        if (isDefaultTitle) {
+          const autoTitle = sentContent.substring(0, 50) + (sentContent.length > 50 ? '...' : '');
+          setSessions(prev => prev.map(s =>
+            s.id === activeSession.id ? { ...s, title: autoTitle } : s
+          ));
+          setActiveSession(prev => ({ ...prev, title: autoTitle }));
+        }
+
+        // Synchronize with database to get true message IDs for feedback
+        await fetchMessages(activeSession.id);
       }
 
-      // Synchronize with database to get true message IDs for feedback
-      await fetchMessages(activeSession.id);
-
     } catch (err) {
-      console.error('Failed to send message', err);
-      setMessages(prev => {
-        const msgs = [...prev];
-        msgs[msgs.length - 1] = { role: 'assistant', content: '⚠️ Failed to get a response. Please check that Ollama is running.' };
-        return msgs;
-      });
+      if (err.name === 'AbortError') {
+        // Stopped by the user — keep the partial reply already streamed.
+        // The backend persisted it; it reconciles on the next message/reload.
+      } else {
+        console.error('Failed to send message', err);
+        if (activeSessionIdRef.current === streamSessionId) {
+          setMessages(prev => {
+            const msgs = [...prev];
+            msgs[msgs.length - 1] = { role: 'assistant', content: '⚠️ Failed to get a response. Please check that Ollama is running.' };
+            return msgs;
+          });
+        }
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
@@ -711,13 +753,25 @@ export default function ChatLayout({ setAuthToken }) {
               placeholder={activeSession ? "Ask the AI Agent Hub anything..." : "Select or start a chat to begin..."}
               disabled={!activeSession || loading}
             />
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={!activeSession || loading || !inputMessage.trim()}
-            >
-              Send
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="btn-primary chat-stop-btn"
+                onClick={handleStop}
+                title="Stop generating"
+                aria-label="Stop generating"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={!activeSession || !inputMessage.trim()}
+              >
+                Send
+              </button>
+            )}
           </form>
         </div>
       </main>
