@@ -16,7 +16,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core import database
-from app import models, training_service
+from app import models
+from app.ml import training_service
 from app.core.auth.auth import get_current_admin
 
 router = APIRouter(prefix="/training", tags=["Training"])

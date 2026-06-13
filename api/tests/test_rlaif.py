@@ -73,7 +73,7 @@ class TestRLAIF:
     def test_rlaif_positive_score_for_accurate_response(self, monkeypatch):
         """TC-RL-03: complete_sync returning score=1 writes positive RLAIF rating to DB."""
         from app.core.llm import llm_service
-        from app import rlaif_service
+        from app.ml import rlaif_service
         import json as _json
 
         good_response = _json.dumps({
@@ -89,7 +89,7 @@ class TestRLAIF:
         mock_msg = MagicMock()
         mock_db.query.return_value.filter.return_value.first.return_value = mock_msg
 
-        with patch("app.rlaif_service.database.SessionLocal", return_value=mock_db):
+        with patch("app.ml.rlaif_service.database.SessionLocal", return_value=mock_db):
             rlaif_service.audit_message_rlaif(
                 message_id=1,
                 query="How does ADOP work?",

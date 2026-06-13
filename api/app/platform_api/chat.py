@@ -6,7 +6,8 @@ import asyncio
 import time
 import re as _re
 from app.core import database, config_service, telemetry
-from app import schemas, models, rlaif_service
+from app import schemas, models
+from app.ml import rlaif_service
 from app.core.rag import rag_service
 from app.core.llm import llm_service, semantic_cache, llm_guard_service
 from app.core.auth.auth import get_current_user
