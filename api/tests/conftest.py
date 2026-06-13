@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from starlette.testclient import TestClient
 from app.core.database import Base, get_db
-from app.gateway import gateway
+from app.main import app
 from app import models
 from app.common import utils
 
@@ -102,10 +102,10 @@ def client(db_session):
     def _override_db():
         yield db_session
 
-    gateway.dependency_overrides[get_db] = _override_db
-    with TestClient(gateway, raise_server_exceptions=False) as c:
+    app.dependency_overrides[get_db] = _override_db
+    with TestClient(app, raise_server_exceptions=False) as c:
         yield c
-    gateway.dependency_overrides.clear()
+    app.dependency_overrides.clear()
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────

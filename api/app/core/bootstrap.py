@@ -1,17 +1,15 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+"""Application bootstrap: schema provisioning + first-run seeding.
 
+Invoked once at startup by app.main. The schema source of truth is the models'
+metadata (create_all), not the Alembic migration chain. Seeding is best-effort
+and never blocks startup.
+"""
 import os
 
 from app import models
 from app.common import utils
-from app.core.database import engine, get_db, SessionLocal
-from app.core.middleware import TelemetryMiddleware
+from app.core.database import engine, SessionLocal
 from app.core.llm.llm_service import DEFAULT_MODELS, _OLLAMA_BASE
-from app.routers import auth, chat, rag, rl, deployments, deployment_agent, performance_agent, admin, config, sso, monitoring, cloning, audit, training, patching
-
-models.Base.metadata.create_all(bind=engine)
 
 
 # First-run administrator bootstrap. Credentials are configurable via env so
@@ -109,48 +107,8 @@ def seed_default_llm_provider():
         db.close()
 
 
-seed_initial_admin()
-seed_default_llm_provider()
-
-gateway = FastAPI()
-
-gateway.add_middleware(TelemetryMiddleware)
-
-# CORS — allow the React frontend's origin. By default accept any host serving
-# the frontend on port 5173 (covers localhost and remote-server IP/hostname
-# deployments) without per-host config. Set CORS_ORIGINS (comma-separated) for a
-# fixed allow-list, e.g. behind a domain / reverse proxy.
-_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
-_cors_kwargs = dict(allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-if _cors_origins:
-    _cors_kwargs["allow_origins"] = _cors_origins
-else:
-    _cors_kwargs["allow_origin_regex"] = r"https?://[^/]+:5173"
-gateway.add_middleware(CORSMiddleware, **_cors_kwargs)
-
-gateway.include_router(auth.router)
-gateway.include_router(chat.router)
-gateway.include_router(rag.router)
-gateway.include_router(rl.router)
-gateway.include_router(deployments.router)
-gateway.include_router(deployment_agent.router)
-gateway.include_router(performance_agent.router)
-gateway.include_router(admin.router)
-gateway.include_router(config.router)
-gateway.include_router(sso.router)
-gateway.include_router(monitoring.router)
-gateway.include_router(cloning.router)
-gateway.include_router(audit.router)
-gateway.include_router(training.router)
-gateway.include_router(patching.router)
-
-
-@gateway.get("/")
-async def root():
-    return {"message": "API Service Active"}
-
-
-@gateway.get("/health")
-def health():
-    return {"message": "Health OK"}
-
+def run_bootstrap():
+    """Provision the schema then run first-run seeding. Called once at startup."""
+    models.Base.metadata.create_all(bind=engine)
+    seed_initial_admin()
+    seed_default_llm_provider()
