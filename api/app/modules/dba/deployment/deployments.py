@@ -957,7 +957,7 @@ def download_deployment_artifact(
     can be copied and re-run manually on another instance.
     """
     from fastapi import Response
-    from app import artifact_service
+    from app.modules.dba.deployment import artifact_service
 
     deployment = db.query(models.DeploymentRun).filter(
         models.DeploymentRun.id == id,
