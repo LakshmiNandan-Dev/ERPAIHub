@@ -56,7 +56,7 @@ class TestHistoryCompression:
 
     def test_key_facts_extracted_environment(self, client, admin_headers, mock_llm, mock_rag, db_session):
         """TC-MC-03: Rule-based extractor picks up EBS environment names."""
-        from app.routers.chat import _extract_key_facts
+        from app.platform_api.chat import _extract_key_facts
         from app import models
 
         # Simulate messages that mention environments
@@ -71,7 +71,7 @@ class TestHistoryCompression:
 
     def test_key_facts_extracted_files_and_errors(self, client, admin_headers, mock_llm, mock_rag, db_session):
         """TC-MC-04: Rule-based extractor captures file names and ORA/PLS errors."""
-        from app.routers.chat import _extract_key_facts
+        from app.platform_api.chat import _extract_key_facts
         from app import models
 
         msgs = [
@@ -86,7 +86,7 @@ class TestHistoryCompression:
 
     def test_key_facts_empty_for_no_entities(self):
         """TC-MC-03 (negative): Returns empty string when no EBS entities found."""
-        from app.routers.chat import _extract_key_facts
+        from app.platform_api.chat import _extract_key_facts
         from app import models
 
         msgs = [models.ChatMessage(session_id=1, role="user", content="Hello, how are you?")]
@@ -94,7 +94,7 @@ class TestHistoryCompression:
 
     def test_context_block_injected_when_compressed(self, client, admin_headers, mock_rag, db_session):
         """TC-MC-07: When summary exists, [EARLIER CONVERSATION CONTEXT] block appears in LLM messages."""
-        from app.routers.chat import _build_ollama_messages
+        from app.platform_api.chat import _build_ollama_messages
         from app import models
 
         # Create 25 messages (more than _MAX_HISTORY_MESSAGES=20)
@@ -112,7 +112,7 @@ class TestHistoryCompression:
 
     def test_sliding_window_trims_messages(self):
         """TC-MC-01 (window): _build_ollama_messages trims to last 20 messages."""
-        from app.routers.chat import _build_ollama_messages, _MAX_HISTORY_MESSAGES
+        from app.platform_api.chat import _build_ollama_messages, _MAX_HISTORY_MESSAGES
         from app import models
 
         msgs = [

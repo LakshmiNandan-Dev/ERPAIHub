@@ -17,7 +17,7 @@ class TestDocumentUpload:
 
     def test_upload_pdf_success(self, client, admin_headers):
         """TC-RG-01: PDF document uploads and gets indexed."""
-        with patch("app.rag_service.index_document", return_value=4):
+        with patch("app.core.rag.rag_service.index_document", return_value=4):
             r = client.post(
                 "/rag/documents",
                 files={"file": ("guide.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")},
@@ -31,7 +31,7 @@ class TestDocumentUpload:
 
     def test_upload_txt_success(self, client, admin_headers):
         """TC-RG-02: TXT document uploads and gets indexed."""
-        with patch("app.rag_service.index_document", return_value=2):
+        with patch("app.core.rag.rag_service.index_document", return_value=2):
             r = client.post(
                 "/rag/documents",
                 files={"file": ("notes.txt", io.BytesIO(_txt_bytes()), "text/plain")},
@@ -49,9 +49,28 @@ class TestDocumentUpload:
         )
         assert r.status_code in (400, 422)
 
+    def test_upload_duplicate_rejected(self, client, admin_headers):
+        """TC-RG-09: Re-uploading byte-identical content returns 409 Conflict."""
+        dup = io.BytesIO(_txt_bytes())
+        with patch("app.core.rag.rag_service.index_document", return_value=2):
+            r1 = client.post(
+                "/rag/documents",
+                files={"file": ("first.txt", dup, "text/plain")},
+                headers=admin_headers,
+            )
+            assert r1.status_code == 201
+            # Same bytes, different filename → still a duplicate.
+            r2 = client.post(
+                "/rag/documents",
+                files={"file": ("renamed_copy.txt", io.BytesIO(_txt_bytes()), "text/plain")},
+                headers=admin_headers,
+            )
+        assert r2.status_code == 409
+        assert "already in the knowledge base" in r2.json()["detail"]
+
     def test_list_documents(self, client, admin_headers):
         """TC-RG-01 (list): Uploaded documents appear in the list."""
-        with patch("app.rag_service.index_document", return_value=3):
+        with patch("app.core.rag.rag_service.index_document", return_value=3):
             client.post(
                 "/rag/documents",
                 files={"file": ("ebs_guide.txt", io.BytesIO(_txt_bytes()), "text/plain")},
@@ -63,14 +82,14 @@ class TestDocumentUpload:
 
     def test_delete_document(self, client, admin_headers):
         """TC-RG-06: Deleting a document removes it from the DB and ChromaDB."""
-        with patch("app.rag_service.index_document", return_value=2):
+        with patch("app.core.rag.rag_service.index_document", return_value=2):
             r = client.post(
                 "/rag/documents",
                 files={"file": ("to_delete.txt", io.BytesIO(_txt_bytes()), "text/plain")},
                 headers=admin_headers,
             )
         doc_id = r.json()["id"]
-        with patch("app.rag_service.delete_document_chunks"):
+        with patch("app.core.rag.rag_service.delete_document_chunks"):
             r2 = client.delete(f"/rag/documents/{doc_id}", headers=admin_headers)
         assert r2.status_code == 204
 
@@ -87,7 +106,7 @@ class TestRAGQuery:
 
     def test_rag_context_injected_on_relevant_query(self, client, admin_headers, mock_llm):
         """TC-RG-04: When RAG returns results they appear in the stream response."""
-        from app import rag_service
+        from app.core.rag import rag_service
         with patch.object(rag_service, "query_rag",
                           return_value="ADOP is the online patching tool for Oracle EBS 12.2."):
             from conftest import chat_session
@@ -102,7 +121,7 @@ class TestRAGQuery:
 
     def test_no_rag_below_threshold(self, client, admin_headers, mock_llm):
         """TC-RG-05: When RAG distances are all >= 0.75 nothing is injected."""
-        from app import rag_service
+        from app.core.rag import rag_service
         with patch.object(rag_service, "query_rag", return_value=""):
             from conftest import chat_session
             session_id = chat_session(client, admin_headers)

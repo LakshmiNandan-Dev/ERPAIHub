@@ -10,7 +10,8 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import database, models  # noqa: E402
+from app.core import database  # noqa: E402
+from app import models  # noqa: E402
 
 
 def main() -> int:
