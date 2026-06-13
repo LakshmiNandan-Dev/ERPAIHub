@@ -311,7 +311,8 @@ async def stream_message(
     # Resolve the API key (and model/base_url fallbacks) from the admin-managed
     # credential store when the browser didn't supply one.
     llm_provider, llm_model, llm_api_key, llm_base_url = config_service.resolve_llm(
-        llm_provider, llm_model, llm_api_key, llm_base_url, db, agent="chat"
+        llm_provider, llm_model, llm_api_key, llm_base_url, db, agent="chat",
+        route_text=message_data.content,
     )
     # 1. Verify session
     session = db.query(models.ChatSession).filter(

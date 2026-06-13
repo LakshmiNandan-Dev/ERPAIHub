@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from app import models
 from app.core import crypto
+from app.core.llm import model_router
 
 
 def agent_model(db, agent: Optional[str]) -> Optional[str]:
@@ -33,18 +34,27 @@ def resolve_llm(
     base_url: Optional[str],
     db,
     agent: Optional[str] = None,
+    route_text: Optional[str] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """
     Return effective (provider, model, api_key, base_url).
 
-    If the request already supplied an api_key it wins (back-compat). Otherwise
-    look up the default active credential for the provider and use its decrypted
-    key, plus its model/base_url as fallbacks when the request didn't specify them.
-
-    For the Ollama (local) provider, an agent that has been fine-tuned uses its
-    mapped model tag — this is how a trained local model takes effect per agent.
-    Cloud providers are never affected.
+    Resolution order:
+      1. Per-agent routing (model_router): a different provider per agent and a
+         complexity-based small/large model choice driven by ``route_text``.
+         Only engages when the request didn't pin a concrete model (empty or
+         "auto"); an explicit model wins. See app.core.llm.model_router.
+      2. Ollama fine-tuned model: an agent with a trained local model uses its
+         mapped tag (cloud providers unaffected).
+      3. Credential fill: if the request had no api_key, the default active
+         credential for the provider supplies the key and model/base_url fallbacks.
     """
+    # 1. Per-agent provider + complexity routing (no-op unless opted in).
+    provider, model, route_reason = model_router.resolve(db, agent, provider, model, route_text)
+    if route_reason not in ("explicit", "no-route"):
+        print(f"[LLMRouter] agent={agent} provider={provider} model={model} via {route_reason}")
+
+    # 2. Ollama fine-tuned per-agent model takes precedence for local inference.
     if provider == "ollama":
         tuned = agent_model(db, agent)
         if tuned:

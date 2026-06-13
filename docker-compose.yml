@@ -100,6 +100,21 @@ services:
       AGENT_TOKEN_BUDGET: ${AGENT_TOKEN_BUDGET:-8000}
       AGENT_HISTORY_MAX_MSGS: ${AGENT_HISTORY_MAX_MSGS:-12}
       AGENT_LLM_MAX_RETRIES: ${AGENT_LLM_MAX_RETRIES:-2}
+      # Per-agent LLM routing: complexity classifier picks small vs large model.
+      # Per-agent provider/model overrides are managed in Admin Console → Agent Routing.
+      LLM_ROUTING_ENABLED: ${LLM_ROUTING_ENABLED:-1}
+      LLM_ROUTING_LARGE_THRESHOLD: ${LLM_ROUTING_LARGE_THRESHOLD:-2}
+      # Provider tier defaults (override to match locally available models).
+      LLM_TIER_OPENAI_SMALL: ${LLM_TIER_OPENAI_SMALL:-gpt-4o-mini}
+      LLM_TIER_OPENAI_LARGE: ${LLM_TIER_OPENAI_LARGE:-gpt-4o}
+      LLM_TIER_ANTHROPIC_SMALL: ${LLM_TIER_ANTHROPIC_SMALL:-claude-haiku-4-5-20251001}
+      LLM_TIER_ANTHROPIC_LARGE: ${LLM_TIER_ANTHROPIC_LARGE:-claude-sonnet-4-6}
+      LLM_TIER_GEMINI_SMALL: ${LLM_TIER_GEMINI_SMALL:-gemini-2.0-flash}
+      LLM_TIER_GEMINI_LARGE: ${LLM_TIER_GEMINI_LARGE:-gemini-2.5-pro}
+      # Ollama tiers default to OLLAMA_DEFAULT_MODEL (routing no-op) until a
+      # heavier local model is set here.
+      LLM_TIER_OLLAMA_SMALL: ${LLM_TIER_OLLAMA_SMALL:-}
+      LLM_TIER_OLLAMA_LARGE: ${LLM_TIER_OLLAMA_LARGE:-}
     ports:
       - "8000:8000"
     volumes:

@@ -695,7 +695,8 @@ async def agent_chat(
     api_key  = request.headers.get("X-LLM-Api-Key", "")
     base_url = request.headers.get("X-LLM-Base-Url", "")
     provider, model, api_key, base_url = config_service.resolve_llm(
-        provider, model or None, api_key or None, base_url or None, db, agent="deployment"
+        provider, model or None, api_key or None, base_url or None, db, agent="deployment",
+        route_text=payload.user_message,
     )
     model = model or ""
     api_key = api_key or ""

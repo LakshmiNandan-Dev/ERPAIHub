@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
@@ -11,6 +11,7 @@ const TABS = [
   { key: 'servers',      label: 'SSH Servers',   icon: Server,        roles: ['admin'] },
   { key: 'environments', label: 'Environments',  icon: Globe,         roles: ['admin'] },
   { key: 'llm',          label: 'LLM Providers', icon: Cpu,           roles: ['admin'] },
+  { key: 'routing',      label: 'Agent Routing', icon: Split,         roles: ['admin'] },
   { key: 'training',     label: 'Training',      icon: GraduationCap, roles: ['admin'] },
   { key: 'integrations', label: 'Integrations',  icon: Link2,         roles: ['admin'] },
   { key: 'sso',          label: 'Authentication', icon: LogIn,        roles: ['admin'] },
@@ -51,6 +52,7 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
           {tab === 'servers' && <ServersTab />}
           {tab === 'environments' && <EnvironmentsTab />}
           {tab === 'llm' && <LlmTab />}
+          {tab === 'routing' && <RoutingTab />}
           {tab === 'training' && <TrainingTab />}
           {tab === 'integrations' && <IntegrationsTab />}
           {tab === 'sso' && <SsoTab />}
@@ -557,6 +559,144 @@ function LlmTab() {
           )}
           <label className="admin-check">
             <input type="checkbox" checked={!!form.is_default} onChange={e => setForm({ ...form, is_default: e.target.checked })} /> Default for this provider
+          </label>
+        </FormModal>
+      )}
+    </div>
+  );
+}
+
+/* ── Agent Routing (per-agent provider + complexity model tiers) ────────────── */
+
+const ROUTING_PROVIDERS = ['', 'ollama', 'openai', 'anthropic', 'gemini'];
+
+function RoutingTab() {
+  const { rows, error, loading, reload, setError } = useResource('/admin/agent-policies');
+  const [meta, setMeta] = useState({ agents: [], tier_defaults: {}, routing_enabled: true });
+  const [form, setForm] = useState(null);
+
+  useEffect(() => {
+    api.get('/admin/agent-policies/meta').then(r => setMeta(r.data)).catch(() => {});
+  }, []);
+
+  const blank = {
+    agent: '', provider: '', small_model: '', large_model: '',
+    force_tier: '', routing_enabled: true, is_active: true,
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    // Normalise empty strings to null so the backend keeps provider/tier defaults.
+    const body = {
+      ...form,
+      provider: form.provider || null,
+      small_model: form.small_model || null,
+      large_model: form.large_model || null,
+      force_tier: form.force_tier || null,
+    };
+    try {
+      if (form.id) await api.patch(`/admin/agent-policies/${form.id}`, body);
+      else await api.post('/admin/agent-policies', body);
+      setForm(null); reload();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Delete this agent policy?')) return;
+    try { await api.delete(`/admin/agent-policies/${id}`); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  // Show what a policy resolves to, falling back to the provider's tier defaults.
+  const tierHint = (p, tier) => {
+    const explicit = tier === 'small' ? p.small_model : p.large_model;
+    if (explicit) return explicit;
+    const prov = p.provider || '(request)';
+    const def = meta.tier_defaults[p.provider]?.[tier];
+    return def ? `${def} · default` : `${prov} default`;
+  };
+
+  // Agents that don't yet have a policy (one policy per agent).
+  const used = new Set(rows.map(r => r.agent));
+  const freeAgents = meta.agents.filter(a => !used.has(a));
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Agent Routing {loading && <span className="admin-muted">· loading…</span>}</h4>
+        <button className="admin-btn-primary" disabled={freeAgents.length === 0}
+                onClick={() => setForm({ ...blank, agent: freeAgents[0] || '' })}>
+          <Plus size={14} /> New Agent Policy
+        </button>
+      </div>
+      {error && <p className="admin-error">{error}</p>}
+      <p className="admin-muted">
+        Each agent can use its own provider and a small/large model pair. A heuristic reads the task
+        and routes simple requests to the small model, complex ones to the large model. Leave a field
+        blank to use the provider default. {meta.routing_enabled ? '' : '⚠️ Routing is globally disabled (LLM_ROUTING_ENABLED=0).'}
+      </p>
+
+      <table className="admin-table">
+        <thead><tr>
+          <th>Agent</th><th>Provider</th><th>Small (simple)</th><th>Large (complex)</th>
+          <th>Mode</th><th>Active</th><th></th>
+        </tr></thead>
+        <tbody>
+          {rows.map(p => (
+            <tr key={p.id}>
+              <td><strong>{p.agent}</strong></td>
+              <td>{p.provider || <span className="admin-muted">request</span>}</td>
+              <td>{tierHint(p, 'small')}</td>
+              <td>{tierHint(p, 'large')}</td>
+              <td>
+                {!p.routing_enabled ? <span className="admin-pill">off</span>
+                  : p.force_tier ? <span className="admin-pill">forced: {p.force_tier}</span>
+                  : <span className="admin-pill ok">auto</span>}
+              </td>
+              <td>{p.is_active ? <span className="admin-pill ok">yes</span> : <span className="admin-pill">no</span>}</td>
+              <td className="admin-actions">
+                <button onClick={() => setForm({ ...p, provider: p.provider || '', small_model: p.small_model || '', large_model: p.large_model || '', force_tier: p.force_tier || '' })}><Pencil size={14} /></button>
+                <button onClick={() => remove(p.id)}><Trash2 size={14} /></button>
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 && !loading && <tr><td colSpan={7} className="admin-muted">No agent policies — all agents use the request/default model.</td></tr>}
+        </tbody>
+      </table>
+
+      {form && (
+        <FormModal title={form.id ? `Edit Policy — ${form.agent}` : 'New Agent Policy'} onClose={() => setForm(null)} onSubmit={save}>
+          <Field label="Agent">
+            <select value={form.agent} disabled={!!form.id}
+                    onChange={e => setForm({ ...form, agent: e.target.value })}>
+              {(form.id ? [form.agent] : freeAgents).map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </Field>
+          <Field label="Provider (blank = keep request/default)">
+            <select value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
+              {ROUTING_PROVIDERS.map(p => <option key={p} value={p}>{p || '— request/default —'}</option>)}
+            </select>
+          </Field>
+          <Field label="Small model (simple tasks)">
+            <input value={form.small_model} placeholder={meta.tier_defaults[form.provider]?.small || 'provider default'}
+                   onChange={e => setForm({ ...form, small_model: e.target.value })} />
+          </Field>
+          <Field label="Large model (complex tasks)">
+            <input value={form.large_model} placeholder={meta.tier_defaults[form.provider]?.large || 'provider default'}
+                   onChange={e => setForm({ ...form, large_model: e.target.value })} />
+          </Field>
+          <Field label="Tier selection">
+            <select value={form.force_tier} onChange={e => setForm({ ...form, force_tier: e.target.value })}>
+              <option value="">Auto (classify task complexity)</option>
+              <option value="small">Always small</option>
+              <option value="large">Always large</option>
+            </select>
+          </Field>
+          <label className="admin-check">
+            <input type="checkbox" checked={!!form.routing_enabled} onChange={e => setForm({ ...form, routing_enabled: e.target.checked })} /> Routing enabled
+          </label>
+          <label className="admin-check">
+            <input type="checkbox" checked={!!form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} /> Active
           </label>
         </FormModal>
       )}

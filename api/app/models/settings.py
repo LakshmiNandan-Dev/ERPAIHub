@@ -58,3 +58,28 @@ class LlmCredential(Base):
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class AgentLlmPolicy(Base):
+    """
+    Per-agent LLM routing policy (admin-managed). Lets each agent
+    (chat | deployment | performance | cloning | knowledge_base | patching)
+    pick its own provider and a small/large model pair. At request time a
+    heuristic complexity classifier routes simple tasks to ``small_model`` and
+    complex ones to ``large_model``. ``force_tier`` pins a tier (skip the
+    classifier); ``provider`` (null = use the request/default provider) enables
+    a different provider per agent. See app.core.llm.model_router.
+    """
+    __tablename__ = "agent_llm_policies"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    agent = Column(String(40), unique=True, nullable=False)
+    provider = Column(String(20), nullable=True)        # null = keep request/default provider
+    small_model = Column(String(150), nullable=True)    # null = provider's built-in small default
+    large_model = Column(String(150), nullable=True)    # null = provider's built-in large default
+    routing_enabled = Column(Boolean, server_default='TRUE', nullable=False)
+    force_tier = Column(String(10), nullable=True)      # 'small' | 'large' | null (classify)
+    is_active = Column(Boolean, server_default='TRUE', nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))

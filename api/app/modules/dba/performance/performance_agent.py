@@ -293,7 +293,10 @@ async def analyze_performance(
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
-    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="analyze Oracle EBS database performance diagnostics and recommend optimizations",
+    )
 
     env   = payload.environment or "EBS"
     areas = payload.analysis_areas or ALL_AREAS
@@ -645,7 +648,10 @@ async def awr_compare(
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
-    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="analyze Oracle EBS database performance diagnostics and recommend optimizations",
+    )
     env = payload.environment or "EBS"
 
     async def stream():
@@ -693,7 +699,10 @@ async def awr_upload(
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
-    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="analyze Oracle EBS database performance diagnostics and recommend optimizations",
+    )
 
     content1 = (await file1.read()).decode("utf-8", errors="replace")
     parsed1  = _parse_awr_report(content1)

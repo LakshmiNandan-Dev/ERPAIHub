@@ -12,7 +12,7 @@ from typing import List, Optional
 from app.core import database, crypto
 from app import schemas, models
 from app.common import utils
-from app.core.llm import llm_service, llm_guard_service
+from app.core.llm import llm_service, llm_guard_service, model_router
 from app.core.integrations import cred_test
 from app.core.auth.auth import get_current_admin, require_approver
 
@@ -424,6 +424,70 @@ def delete_llm_credential(cred_id: int,
     if not c:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
     db.delete(c)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Per-agent LLM routing policy
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/agent-policies/meta", response_model=schemas.AgentRoutingMeta)
+def agent_routing_meta(_: models.User = Depends(get_current_admin)):
+    """Known agents + per-provider tier defaults, for populating the admin form."""
+    providers = ("ollama", "openai", "anthropic", "gemini")
+    return {
+        "agents": model_router.KNOWN_AGENTS,
+        "tier_defaults": {p: model_router._default_tiers(p) for p in providers},
+        "routing_enabled": model_router.ROUTING_ENABLED,
+    }
+
+
+@router.get("/agent-policies", response_model=List[schemas.AgentLlmPolicyOut])
+def list_agent_policies(db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    return db.query(models.AgentLlmPolicy).order_by(models.AgentLlmPolicy.agent.asc()).all()
+
+
+@router.post("/agent-policies", response_model=schemas.AgentLlmPolicyOut, status_code=status.HTTP_201_CREATED)
+def create_agent_policy(payload: schemas.AgentLlmPolicyCreate,
+                        db: Session = Depends(database.get_db),
+                        admin: models.User = Depends(get_current_admin)):
+    if payload.force_tier not in (None, "small", "large"):
+        raise HTTPException(status_code=400, detail="force_tier must be 'small', 'large', or null")
+    if db.query(models.AgentLlmPolicy).filter(models.AgentLlmPolicy.agent == payload.agent).first():
+        raise HTTPException(status_code=409, detail=f"A policy for agent '{payload.agent}' already exists.")
+    p = models.AgentLlmPolicy(created_by=admin.id, **payload.model_dump())
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.patch("/agent-policies/{policy_id}", response_model=schemas.AgentLlmPolicyOut)
+def update_agent_policy(policy_id: int, payload: schemas.AgentLlmPolicyUpdate,
+                        db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    p = db.query(models.AgentLlmPolicy).filter(models.AgentLlmPolicy.id == policy_id).first()
+    if not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("force_tier") not in (None, "small", "large"):
+        raise HTTPException(status_code=400, detail="force_tier must be 'small', 'large', or null")
+    for field, val in data.items():
+        setattr(p, field, val)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.delete("/agent-policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent_policy(policy_id: int,
+                        db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    p = db.query(models.AgentLlmPolicy).filter(models.AgentLlmPolicy.id == policy_id).first()
+    if not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found")
+    db.delete(p)
     db.commit()
 
 
