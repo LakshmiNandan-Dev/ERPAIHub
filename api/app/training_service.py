@@ -83,7 +83,7 @@ def _feedback_examples(db):
 def _rag_examples(db, limit_docs=200, chunks_per_doc=3, max_chars=1500):
     """Ready RAG documents → SFT examples that teach the model the reference content."""
     try:
-        from app import rag_service
+        from app.core.rag import rag_service
         coll = rag_service._get_collection()
     except Exception:
         return []

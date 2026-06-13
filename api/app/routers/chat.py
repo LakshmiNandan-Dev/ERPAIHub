@@ -5,7 +5,10 @@ import json
 import asyncio
 import time
 import re as _re
-from app import database, schemas, models, rag_service, rlaif_service, llm_service, config_service, telemetry, semantic_cache, llm_guard_service
+from app.core import database, config_service, telemetry
+from app import schemas, models, rlaif_service
+from app.core.rag import rag_service
+from app.core.llm import llm_service, semantic_cache, llm_guard_service
 from app.routers.auth import get_current_user
 
 router = APIRouter(

@@ -15,7 +15,9 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from app.routers.auth import get_current_user, require_agent_access
-from app import models, llm_service, database, config_service, telemetry
+from app import models
+from app.core.llm import llm_service
+from app.core import database, config_service, telemetry
 
 router = APIRouter(prefix="/performance", tags=["Performance Agent"])
 

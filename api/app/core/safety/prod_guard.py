@@ -13,7 +13,8 @@ non-prod name. So we identify production from what the database *actually is*:
 
 A clone TARGET that trips any of these is blocked (an admin may override with a reason).
 """
-from app import models, crypto
+from app import models
+from app.core import crypto
 
 # Read-only probes (best-effort; each wrapped so a missing object just omits a signal)
 _PROBE_SQL = {

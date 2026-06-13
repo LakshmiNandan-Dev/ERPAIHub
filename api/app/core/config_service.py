@@ -8,7 +8,8 @@ from the admin-managed, encrypted LlmCredential store at use-time.
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from app import models, crypto
+from app import models
+from app.core import crypto
 
 
 def agent_model(db, agent: Optional[str]) -> Optional[str]:

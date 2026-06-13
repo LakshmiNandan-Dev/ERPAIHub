@@ -25,9 +25,10 @@ os.environ.setdefault("APP_SECRET_KEY", "test-secret-key-not-for-production")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from starlette.testclient import TestClient
-from app.database import Base, get_db
+from app.core.database import Base, get_db
 from app.gateway import gateway
-from app import models, utils
+from app import models
+from app.common import utils
 
 # ── Engine bound to the TEST database ─────────────────────────────────────────
 TEST_DB_URL = os.environ["DATABASE_URL"]
@@ -196,7 +197,7 @@ def ssh_server(client, admin_headers):
 @pytest.fixture
 def mock_llm(monkeypatch):
     """Mock LLM streaming and sync completion — no Ollama required."""
-    from app import llm_service
+    from app.core.llm import llm_service
 
     async def _stream(messages, provider="ollama", model=None, api_key=None, base_url=None):
         yield "Oracle EBS mock response. "
@@ -212,7 +213,7 @@ def mock_llm(monkeypatch):
 @pytest.fixture
 def mock_rag(monkeypatch):
     """Mock RAG service — returns empty context by default."""
-    from app import rag_service
+    from app.core.rag import rag_service
     monkeypatch.setattr(rag_service, "query_rag", lambda q, n_results=4: "")
     monkeypatch.setattr(rag_service, "index_document", lambda *a, **kw: 5)
     monkeypatch.setattr(rag_service, "delete_document_chunks", lambda doc_id: None)

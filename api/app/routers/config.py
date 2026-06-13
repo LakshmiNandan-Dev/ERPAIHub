@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List
 
-from app import database, schemas, models
+from app.core import database
+from app import schemas, models
 from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/config", tags=["Config"])

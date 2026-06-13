@@ -9,7 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from app import database, schemas, models, utils, crypto, llm_service, cred_test, llm_guard_service
+from app.core import database, crypto
+from app import schemas, models
+from app.common import utils
+from app.core.llm import llm_service, llm_guard_service
+from app.core.integrations import cred_test
 from app.routers.auth import get_current_admin, require_approver
 
 _ROLES = ("admin", "dba", "user")
@@ -127,7 +131,7 @@ def approve_user(user_id: int,
                  db: Session = Depends(database.get_db),
                  approver: models.User = Depends(require_approver)):
     """Approve a pending self sign-up — activates the account. Admin/DBA; not your own request."""
-    from app import audit_service
+    from app.core.audit import audit_service
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -148,7 +152,7 @@ def reject_user(user_id: int,
                 db: Session = Depends(database.get_db),
                 approver: models.User = Depends(require_approver)):
     """Reject a pending self sign-up — keeps the record (inactive) for audit. Admin/DBA."""
-    from app import audit_service
+    from app.core.audit import audit_service
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -343,7 +347,7 @@ def test_environment(env_id: int,
     if not (e.db_host and e.db_sid and e.db_user):
         return {"ok": False, "message": "db_host, db_sid and db_user are required to test."}
     # Connect and capture the intrinsic identity (DBID / global_name) for the prod guard.
-    from app import prod_guard
+    from app.core.safety import prod_guard
     ident = prod_guard.capture_identity(e)
     if ident.get("reachable"):
         e.db_id = ident.get("db_id") or e.db_id

@@ -22,7 +22,7 @@ import time
 import uuid
 from typing import Optional
 
-from app import rag_service
+from app.core.rag import rag_service
 
 ENABLED = os.getenv("SEMANTIC_CACHE_ENABLED", "1").lower() not in ("0", "false", "no")
 # Minimum cosine similarity for a hit. ChromaDB cosine distance = 1 - similarity.

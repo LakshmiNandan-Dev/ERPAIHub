@@ -3,10 +3,13 @@ import sys
 from sqlalchemy import text
 from mcp.server.fastmcp import FastMCP
 
-# Ensure the parent directory is in the path to import app modules correctly
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure the api/ directory (the parent of the `app` package) is on the path so
+# `import app...` resolves. This file lives at app/core/tools/, so walk up 4 levels.
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from app import database, models, rag_service
+from app.core import database
+from app import models
+from app.core.rag import rag_service
 
 # Initialize FastMCP Server
 mcp = FastMCP("Oracle EBS AI Agent Server")

@@ -4,7 +4,8 @@ invocations, including the origin (IP address + user-agent / machine).
 
 All writes are wrapped so auditing can never break a request.
 """
-from app import database, models
+from app.core import database
+from app import models
 
 
 def platform_of(user_agent: str) -> str:

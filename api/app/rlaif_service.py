@@ -1,6 +1,8 @@
 import re
 from typing import Optional
-from app import database, models, llm_service
+from app.core import database
+from app import models
+from app.core.llm import llm_service
 
 
 def audit_message_rlaif(

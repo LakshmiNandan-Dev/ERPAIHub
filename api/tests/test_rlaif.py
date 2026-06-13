@@ -48,7 +48,7 @@ class TestRLAIF:
 
     def test_rlaif_failure_does_not_break_chat(self, client, admin_headers, mock_rag, monkeypatch):
         """TC-RL-04: RLAIF LLM failure doesn't break the chat response."""
-        from app import llm_service
+        from app.core.llm import llm_service
 
         call_count = {"n": 0}
 
@@ -72,7 +72,8 @@ class TestRLAIF:
 
     def test_rlaif_positive_score_for_accurate_response(self, monkeypatch):
         """TC-RL-03: complete_sync returning score=1 writes positive RLAIF rating to DB."""
-        from app import llm_service, rlaif_service
+        from app.core.llm import llm_service
+        from app import rlaif_service
         import json as _json
 
         good_response = _json.dumps({

@@ -63,7 +63,7 @@ class TestDeploymentAgentReact:
 
     def test_agent_stuck_loop_detection(self, client, admin_headers, monkeypatch):
         """TC-DA-07: Agent exits gracefully when it loops on the same action twice."""
-        from app import llm_service
+        from app.core.llm import llm_service
 
         call_count = {"n": 0}
 
@@ -81,7 +81,7 @@ class TestDeploymentAgentReact:
 
     def test_agent_finish_tool_ends_session(self, client, admin_headers, monkeypatch):
         """TC-DA-08: Agent returns final message when 'finish' tool is invoked."""
-        from app import llm_service
+        from app.core.llm import llm_service
 
         async def _stream_finish(*args, **kwargs):
             yield "Thought: Deployment is complete.\n"
@@ -115,7 +115,7 @@ class TestDeploymentAgentReact:
 
     def test_agent_confluence_fetch_graceful_failure(self, client, admin_headers, monkeypatch):
         """TC-DA-07 (confluence): Confluence fetch failure doesn't crash the agent."""
-        from app import llm_service
+        from app.core.llm import llm_service
 
         async def _stream_confluence(*args, **kwargs):
             yield "Thought: The user gave a Confluence URL. I'll fetch it.\n"

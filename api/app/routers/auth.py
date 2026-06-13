@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, status, HTTPException, Response, Body, R
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-from app import database, schemas, models, utils, audit_service
+from app.core import database
+from app import schemas, models
+from app.common import utils
+from app.core.audit import audit_service
 
 
 def _origin(request: Request):

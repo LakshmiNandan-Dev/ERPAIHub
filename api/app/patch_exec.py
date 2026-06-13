@@ -8,7 +8,8 @@ live over SSH — `adop -status`, `opatch lspatches` (already-applied) and
 explicitly armed for live execution. Everything degrades to the simulator when
 SSH or credentials are unavailable, so the agent never hard-fails.
 """
-from app import models, crypto
+from app import models
+from app.core import crypto
 
 SSH_TIMEOUT = 15.0
 CMD_TIMEOUT = 600.0    # adop phases can run for many minutes

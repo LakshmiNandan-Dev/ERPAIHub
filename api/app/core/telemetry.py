@@ -12,7 +12,8 @@ from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import case, func
 
-from app import database, models
+from app.core import database
+from app import models
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 ACTIVE_WINDOW_S = 300  # a user is "connected" if seen within this many seconds

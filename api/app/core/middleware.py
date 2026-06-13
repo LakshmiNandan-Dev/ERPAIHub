@@ -10,7 +10,8 @@ offloaded to a thread so it never delays the response.
 import time
 import asyncio
 
-from app import telemetry, audit_service
+from app.core import telemetry
+from app.core.audit import audit_service
 
 
 class TelemetryMiddleware:

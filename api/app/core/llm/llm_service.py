@@ -7,7 +7,7 @@ import httpx
 import json
 from typing import AsyncGenerator, Optional
 
-from app import llm_cache
+from app.core.llm import llm_cache
 
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
 # Keep the model resident between requests so each call skips a cold reload and

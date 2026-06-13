@@ -15,7 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response, UploadF
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app import database, models, training_service
+from app.core import database
+from app import models, training_service
 from app.routers.auth import get_current_admin
 
 router = APIRouter(prefix="/training", tags=["Training"])

@@ -13,8 +13,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 import tempfile
 from duckduckgo_search import DDGS
 
-# Paths
-CHROMA_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "chroma_db")
+# Paths — the Chroma store lives at api/chroma_db (one level above the `app`
+# package), independent of where this module sits in the package tree.
+# This file is at app/core/rag/, so three dirname() hops reach api/app.
+_APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CHROMA_DB_PATH = os.path.join(_APP_DIR, "..", "chroma_db")
 COLLECTION_NAME = "ebs_knowledge"
 
 # Initialize ChromaDB (persistent, local)

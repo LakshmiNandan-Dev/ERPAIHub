@@ -9,7 +9,10 @@ from pydantic import BaseModel
 from typing import Optional, Any
 from datetime import datetime, timezone
 
-from app import database, models, cloning_service, prod_guard, audit_service
+from app.core import database
+from app import models, cloning_service
+from app.core.safety import prod_guard
+from app.core.audit import audit_service
 from app.routers.auth import get_current_user, require_agent_access, require_approver
 
 router = APIRouter(prefix="/cloning", tags=["Cloning Agent"])

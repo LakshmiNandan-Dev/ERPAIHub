@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
-from app import database, schemas, models
+from app.core import database
+from app import schemas, models
 from app.routers.auth import get_current_user
-from app import rag_service
+from app.core.rag import rag_service
 
 router = APIRouter(
     prefix="/rag",

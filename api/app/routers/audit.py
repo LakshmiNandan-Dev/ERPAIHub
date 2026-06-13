@@ -13,7 +13,9 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
-from app import database, models, audit_service
+from app.core import database
+from app import models
+from app.core.audit import audit_service
 from app.routers.auth import require_approver
 
 router = APIRouter(prefix="/admin/audit", tags=["Audit"])

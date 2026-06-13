@@ -15,7 +15,10 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone
 
-from app import database, models, patching_service, prod_guard, audit_service, patch_exec
+from app.core import database
+from app import models, patching_service, patch_exec
+from app.core.safety import prod_guard
+from app.core.audit import audit_service
 from app.routers.auth import get_current_user, require_agent_access, require_approver
 
 router = APIRouter(prefix="/patching", tags=["Patching Agent"])
