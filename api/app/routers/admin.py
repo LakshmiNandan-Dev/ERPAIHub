@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from .. import database, schemas, models, utils, crypto, llm_service, cred_test, llm_guard_service
-from .auth import get_current_admin, require_approver
+from app import database, schemas, models, utils, crypto, llm_service, cred_test, llm_guard_service
+from app.routers.auth import get_current_admin, require_approver
 
 _ROLES = ("admin", "dba", "user")
 
@@ -127,7 +127,7 @@ def approve_user(user_id: int,
                  db: Session = Depends(database.get_db),
                  approver: models.User = Depends(require_approver)):
     """Approve a pending self sign-up — activates the account. Admin/DBA; not your own request."""
-    from .. import audit_service
+    from app import audit_service
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -148,7 +148,7 @@ def reject_user(user_id: int,
                 db: Session = Depends(database.get_db),
                 approver: models.User = Depends(require_approver)):
     """Reject a pending self sign-up — keeps the record (inactive) for audit. Admin/DBA."""
-    from .. import audit_service
+    from app import audit_service
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -343,7 +343,7 @@ def test_environment(env_id: int,
     if not (e.db_host and e.db_sid and e.db_user):
         return {"ok": False, "message": "db_host, db_sid and db_user are required to test."}
     # Connect and capture the intrinsic identity (DBID / global_name) for the prod guard.
-    from .. import prod_guard
+    from app import prod_guard
     ident = prod_guard.capture_identity(e)
     if ident.get("reachable"):
         e.db_id = ident.get("db_id") or e.db_id
@@ -437,7 +437,7 @@ def _sso_out(s: models.SsoSettings) -> dict:
 
 @router.get("/sso", response_model=schemas.SsoSettingsOut)
 def get_sso(db: Session = Depends(database.get_db), _: models.User = Depends(get_current_admin)):
-    from .sso import get_or_create_settings
+    from app.routers.sso import get_or_create_settings
     return _sso_out(get_or_create_settings(db))
 
 
@@ -445,7 +445,7 @@ def get_sso(db: Session = Depends(database.get_db), _: models.User = Depends(get
 def update_sso(payload: schemas.SsoSettingsUpdate,
                db: Session = Depends(database.get_db),
                _: models.User = Depends(get_current_admin)):
-    from .sso import get_or_create_settings
+    from app.routers.sso import get_or_create_settings
     s = get_or_create_settings(db)
     data = payload.model_dump(exclude_unset=True)
     if "client_secret" in data:
@@ -584,7 +584,7 @@ def test_integration(cred_id: int,
 def test_sso(db: Session = Depends(database.get_db),
              _: models.User = Depends(get_current_admin)):
     """Validate the saved Entra ID settings (tenant discovery + app credentials)."""
-    from .sso import get_or_create_settings
+    from app.routers.sso import get_or_create_settings
     s = get_or_create_settings(db)
     return cred_test.test_sso(s.tenant_id, s.client_id, crypto.decrypt(s.client_secret_enc))
 

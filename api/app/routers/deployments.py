@@ -8,8 +8,8 @@ import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from .. import database, schemas, models, rag_service, llm_service
-from .auth import get_current_user, require_agent_access
+from app import database, schemas, models, rag_service, llm_service
+from app.routers.auth import get_current_user, require_agent_access
 
 router = APIRouter(
     prefix="/deployments",
@@ -557,7 +557,7 @@ def _resolve_managed_credentials(deployment, db) -> None:
     deployment_runs, so no plaintext is persisted at rest.
     """
     from sqlalchemy.orm.attributes import set_committed_value
-    from .. import crypto
+    from app import crypto
 
     if getattr(deployment, "environment_id", None):
         env = db.query(models.EbsEnvironment).filter(
@@ -585,7 +585,7 @@ def _resolve_managed_credentials(deployment, db) -> None:
 
     # Git: inject an admin-managed PAT for the repo host when none was supplied.
     if getattr(deployment, "git_repo_url", None) and not deployment.git_token:
-        from .. import config_service
+        from app import config_service
         _, git_token = config_service.resolve_git_token(deployment.git_repo_url, db)
         if git_token:
             set_committed_value(deployment, "git_token", git_token)
@@ -954,7 +954,7 @@ def download_deployment_artifact(
     can be copied and re-run manually on another instance.
     """
     from fastapi import Response
-    from .. import artifact_service
+    from app import artifact_service
 
     deployment = db.query(models.DeploymentRun).filter(
         models.DeploymentRun.id == id,

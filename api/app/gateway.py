@@ -4,11 +4,11 @@ from sqlalchemy.orm import Session
 
 import os
 
-from . import models, utils
-from .database import engine, get_db, SessionLocal
-from .middleware import TelemetryMiddleware
-from .llm_service import DEFAULT_MODELS, _OLLAMA_BASE
-from .routers import auth, chat, rag, rl, deployments, deployment_agent, performance_agent, admin, config, sso, monitoring, cloning, audit, training, patching
+from app import models, utils
+from app.database import engine, get_db, SessionLocal
+from app.middleware import TelemetryMiddleware
+from app.llm_service import DEFAULT_MODELS, _OLLAMA_BASE
+from app.routers import auth, chat, rag, rl, deployments, deployment_agent, performance_agent, admin, config, sso, monitoring, cloning, audit, training, patching
 
 models.Base.metadata.create_all(bind=engine)
 

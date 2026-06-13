@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 
-from .auth import get_current_user, require_agent_access
-from .. import models, llm_service, database, config_service, telemetry
+from app.routers.auth import get_current_user, require_agent_access
+from app import models, llm_service, database, config_service, telemetry
 
 router = APIRouter(prefix="/performance", tags=["Performance Agent"])
 

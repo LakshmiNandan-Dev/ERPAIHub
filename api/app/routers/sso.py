@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from .. import database, models, schemas, crypto, utils
+from app import database, models, schemas, crypto, utils
 
 router = APIRouter(prefix="/auth/sso", tags=["SSO"])
 

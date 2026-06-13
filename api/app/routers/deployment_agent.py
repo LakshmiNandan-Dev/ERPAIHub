@@ -13,9 +13,9 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Any, List
 
-from .auth import get_current_user, require_agent_access
-from .. import models, llm_service, database, config_service, telemetry
-from .deployments import extract_deployment_steps
+from app.routers.auth import get_current_user, require_agent_access
+from app import models, llm_service, database, config_service, telemetry
+from app.routers.deployments import extract_deployment_steps
 
 router = APIRouter(prefix="/deployments/agent", tags=["Deployment Agent"])
 

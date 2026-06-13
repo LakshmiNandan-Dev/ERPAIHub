@@ -3,8 +3,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import json
-from .. import database, schemas, models
-from .auth import get_current_user
+from app import database, schemas, models
+from app.routers.auth import get_current_user
 
 router = APIRouter(
     prefix="/rl",

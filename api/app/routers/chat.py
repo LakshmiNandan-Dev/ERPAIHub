@@ -5,8 +5,8 @@ import json
 import asyncio
 import time
 import re as _re
-from .. import database, schemas, models, rag_service, rlaif_service, llm_service, config_service, telemetry, semantic_cache, llm_guard_service
-from .auth import get_current_user
+from app import database, schemas, models, rag_service, rlaif_service, llm_service, config_service, telemetry, semantic_cache, llm_guard_service
+from app.routers.auth import get_current_user
 
 router = APIRouter(
     prefix="/chat",
@@ -519,7 +519,7 @@ async def stream_message(
         elif "word" in assembled_content.lower():
             doc_type = "word"
             
-        from .deployments import execute_deployment_task
+        from app.routers.deployments import execute_deployment_task
         
         # Pull optional SSH parameters from target settings or user profile config
         ssh_host = localStorage_or_none = None # Loaded dynamically in background thread task if needed

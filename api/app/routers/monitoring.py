@@ -3,8 +3,8 @@ Admin monitoring API — live telemetry for the Admin Console Monitoring tab.
 """
 from fastapi import APIRouter, Depends
 
-from .. import models, telemetry
-from .auth import get_current_admin
+from app import models, telemetry
+from app.routers.auth import get_current_admin
 
 router = APIRouter(prefix="/admin/monitoring", tags=["Monitoring"])
 
