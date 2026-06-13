@@ -49,6 +49,25 @@ class TestDocumentUpload:
         )
         assert r.status_code in (400, 422)
 
+    def test_upload_duplicate_rejected(self, client, admin_headers):
+        """TC-RG-09: Re-uploading byte-identical content returns 409 Conflict."""
+        dup = io.BytesIO(_txt_bytes())
+        with patch("app.core.rag.rag_service.index_document", return_value=2):
+            r1 = client.post(
+                "/rag/documents",
+                files={"file": ("first.txt", dup, "text/plain")},
+                headers=admin_headers,
+            )
+            assert r1.status_code == 201
+            # Same bytes, different filename → still a duplicate.
+            r2 = client.post(
+                "/rag/documents",
+                files={"file": ("renamed_copy.txt", io.BytesIO(_txt_bytes()), "text/plain")},
+                headers=admin_headers,
+            )
+        assert r2.status_code == 409
+        assert "already in the knowledge base" in r2.json()["detail"]
+
     def test_list_documents(self, client, admin_headers):
         """TC-RG-01 (list): Uploaded documents appear in the list."""
         with patch("app.core.rag.rag_service.index_document", return_value=3):

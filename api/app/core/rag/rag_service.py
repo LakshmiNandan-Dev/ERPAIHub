@@ -38,6 +38,30 @@ _K_RAG_VER = "ragcache:ver"
 _redis = None
 
 
+def _env_bool(name: str, default: str = "1") -> bool:
+    return os.getenv(name, default).lower() not in ("0", "false", "no")
+
+
+# ── Advanced retrieval: cross-encoder reranking + web fallback ──────────────────
+# Two-stage retrieval: a fast embedding search pulls a wide candidate set, then a
+# cross-encoder reranks it for precision. Falls back to plain distance ordering
+# if the reranker can't load (e.g. air-gapped first run with no cached model).
+RAG_RERANK_ENABLED = _env_bool("RAG_RERANK_ENABLED", "1")
+RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RAG_RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "20"))  # first-stage fetch
+# Cross-encoder relevance floor (ms-marco logits: >0 ≈ relevant). Chunks scoring
+# below this are dropped; if none clear the bar the query is treated as a local
+# miss and (optionally) routed to web search.
+RAG_RERANK_MIN_SCORE = float(os.getenv("RAG_RERANK_MIN_SCORE", "0.0"))
+# When the local KB has no confident match, ground the answer with a live
+# DuckDuckGo search instead of returning nothing.
+RAG_WEB_FALLBACK_ENABLED = _env_bool("RAG_WEB_FALLBACK_ENABLED", "1")
+# Embedding-distance ceiling used only when reranking is OFF (legacy path).
+RAG_DISTANCE_CEILING = float(os.getenv("RAG_DISTANCE_CEILING", "0.75"))
+
+_reranker = None
+
+
 def _r():
     global _redis
     if _redis is None:
@@ -95,6 +119,34 @@ def _get_embedding_model() -> SentenceTransformer:
         _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         print("[RAG] Embedding model ready.")
     return _embedding_model
+
+def _get_reranker():
+    """Lazily load the cross-encoder reranker. Returns None if it can't load."""
+    global _reranker
+    if _reranker is None:
+        try:
+            from sentence_transformers import CrossEncoder
+            print(f"[RAG] Loading reranker ({RAG_RERANK_MODEL})...")
+            _reranker = CrossEncoder(RAG_RERANK_MODEL)
+            print("[RAG] Reranker ready.")
+        except Exception as exc:
+            print(f"[RAG] Reranker unavailable, using distance ordering: {exc}")
+            _reranker = False  # sentinel: tried and failed, don't retry every call
+    return _reranker or None
+
+
+def _rerank(query: str, docs: list) -> list:
+    """
+    Score (query, doc) pairs with the cross-encoder and return them ordered
+    most-relevant first as (doc, score) tuples. Returns [] if reranking is
+    unavailable so the caller can fall back to the embedding-distance path.
+    """
+    reranker = _get_reranker()
+    if reranker is None or not docs:
+        return []
+    scores = reranker.predict([(query, d) for d in docs])
+    return sorted(zip(docs, (float(s) for s in scores)), key=lambda x: x[1], reverse=True)
+
 
 def _get_collection():
     global _chroma_client, _collection
@@ -235,21 +287,28 @@ def search_web_fallback(query: str, max_results: int = 3) -> str:
         return ""
 
 
-def query_rag(query_text: str, n_results: int = 4) -> str:
+def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = True) -> str:
     """
-    Find the top-N most relevant chunks for a query.
-    Returns a formatted context string, or empty string if nothing relevant is found.
+    Advanced retrieval: a wide embedding search (recall) is reranked by a
+    cross-encoder (precision), and the top-N relevant chunks are returned as a
+    formatted context string. When the local KB has no confident match and
+    ``allow_web_fallback`` is set, a live DuckDuckGo search grounds the answer
+    instead of returning nothing.
+
+    Falls back to legacy embedding-distance filtering when the reranker can't
+    load, so behaviour degrades gracefully in air-gapped environments.
     """
     collection = _get_collection()
-    if collection.count() == 0:
-        return ""
+    have_corpus = collection.count() > 0
 
-    # Retrieval cache — keyed on corpus version + n_results + query text, so an
-    # index/delete (which bumps the version) makes prior results unreachable.
+    # Retrieval cache — keyed on corpus version + retrieval params + query text,
+    # so an index/delete (which bumps the version) makes prior results stale.
+    # The 'r2' namespace distinguishes reranked results from the legacy cache.
     cache_key = None
     if RAG_CACHE_ENABLED and query_text:
         digest = hashlib.sha256(query_text.encode("utf-8")).hexdigest()
-        cache_key = f"ragcache:q:{_rag_version()}:{n_results}:{digest}"
+        rr = "1" if RAG_RERANK_ENABLED else "0"
+        cache_key = f"ragcache:q2:{_rag_version()}:{n_results}:{rr}:{digest}"
         try:
             hit = _r().get(cache_key)
             if hit is not None:
@@ -257,21 +316,43 @@ def query_rag(query_text: str, n_results: int = 4) -> str:
         except Exception:
             pass
 
-    query_embedding = [embed_query(query_text)]
+    result_str = ""
+    from_web = False
 
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=min(n_results, collection.count()),
-        include=["documents", "metadatas", "distances"]
-    )
+    if have_corpus:
+        # Stage 1 — recall: pull a wide candidate set when reranking, else just N.
+        fetch_k = max(n_results, RAG_RERANK_CANDIDATES) if RAG_RERANK_ENABLED else n_results
+        results = collection.query(
+            query_embeddings=[embed_query(query_text)],
+            n_results=min(fetch_k, collection.count()),
+            include=["documents", "distances"],
+        )
+        docs = results.get("documents", [[]])[0]
+        distances = results.get("distances", [[]])[0]
 
-    docs = results.get("documents", [[]])[0]
-    distances = results.get("distances", [[]])[0]
+        # Stage 2 — precision: cross-encoder rerank, keep those above the floor.
+        relevant = []
+        if RAG_RERANK_ENABLED:
+            ranked = _rerank(query_text, docs)
+            if ranked:
+                relevant = [doc for doc, score in ranked[:n_results]
+                            if score >= RAG_RERANK_MIN_SCORE]
+        if not relevant and not (RAG_RERANK_ENABLED and _get_reranker() is not None):
+            # Reranker off or unavailable → legacy embedding-distance filter.
+            relevant = [doc for doc, dist in zip(docs, distances)
+                        if dist < RAG_DISTANCE_CEILING][:n_results]
 
-    relevant = [doc for doc, dist in zip(docs, distances) if dist < 0.75]
-    result_str = "\n\n---\n\n".join(relevant) if relevant else ""
+        result_str = "\n\n---\n\n".join(relevant) if relevant else ""
 
-    if cache_key is not None:
+    # Web fallback — no confident local match → ground with live search.
+    if not result_str and allow_web_fallback and RAG_WEB_FALLBACK_ENABLED:
+        web = search_web_fallback(query_text)
+        if web:
+            result_str = web
+            from_web = True
+
+    # Cache local results (deterministic); skip web results so they stay fresh.
+    if cache_key is not None and not from_web:
         try:
             _r().set(cache_key, result_str, ex=RAG_CACHE_TTL)
         except Exception:

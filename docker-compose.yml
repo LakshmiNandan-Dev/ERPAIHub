@@ -89,6 +89,12 @@ services:
       RAG_CACHE_ENABLED: ${RAG_CACHE_ENABLED:-1}
       RAG_CACHE_TTL: ${RAG_CACHE_TTL:-3600}
       EMBED_CACHE_TTL: ${EMBED_CACHE_TTL:-86400}
+      # Advanced RAG: cross-encoder reranking + DuckDuckGo web fallback.
+      RAG_RERANK_ENABLED: ${RAG_RERANK_ENABLED:-1}
+      RAG_RERANK_MODEL: ${RAG_RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+      RAG_RERANK_CANDIDATES: ${RAG_RERANK_CANDIDATES:-20}
+      RAG_RERANK_MIN_SCORE: ${RAG_RERANK_MIN_SCORE:-0.0}
+      RAG_WEB_FALLBACK_ENABLED: ${RAG_WEB_FALLBACK_ENABLED:-1}
       # Deployment-agent cost controls: estimated-token budget per chat request,
       # history window sent to the LLM, and retry cap for transient LLM failures.
       AGENT_TOKEN_BUDGET: ${AGENT_TOKEN_BUDGET:-8000}

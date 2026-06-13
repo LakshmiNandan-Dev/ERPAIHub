@@ -131,7 +131,9 @@ def ebs_query_knowledge_base(query: str) -> str:
         query: Troubleshooting search phrase or parameter.
     """
     try:
-        context = rag_service.query_rag(query)
+        # Local-only: this tool searches the KB; the agent has a separate
+        # ebs_web_search tool to decide when to reach the internet.
+        context = rag_service.query_rag(query, allow_web_fallback=False)
         if not context:
             return "No relevant documentation matches found inside the local RAG knowledge base."
         return context

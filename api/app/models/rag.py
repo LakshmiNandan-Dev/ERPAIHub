@@ -12,6 +12,9 @@ class RagDocument(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     filename = Column(String(512), nullable=False)
     file_type = Column(String(50), nullable=False)
+    # SHA-256 of the raw uploaded bytes — used to reject duplicate uploads of
+    # identical content (regardless of filename). Indexed for fast lookup.
+    content_hash = Column(String(64), nullable=True, index=True)
     status = Column(String(50), nullable=False, server_default='indexing')  # indexing | ready | failed
     chunk_count = Column(Integer, nullable=True)
     error_message = Column(Text, nullable=True)

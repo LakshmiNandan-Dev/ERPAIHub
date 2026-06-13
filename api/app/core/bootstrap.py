@@ -6,6 +6,8 @@ and never blocks startup.
 """
 import os
 
+from sqlalchemy import text
+
 from app import models
 from app.common import utils
 from app.core.database import engine, SessionLocal
@@ -107,8 +109,30 @@ def seed_default_llm_provider():
         db.close()
 
 
+def ensure_schema_upgrades():
+    """
+    Apply additive column upgrades that create_all can't make to *existing*
+    tables (create_all only creates missing tables, never alters present ones).
+    Each statement is idempotent (ADD COLUMN IF NOT EXISTS) and best-effort so a
+    failure here never blocks startup.
+    """
+    statements = [
+        # Dedup support: hash of the uploaded bytes (added 2026-06).
+        "ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS ix_rag_documents_content_hash "
+        "ON rag_documents (content_hash)",
+    ]
+    for stmt in statements:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception as exc:  # never block startup on a schema tweak
+            print(f"[schema] Skipped '{stmt[:48]}...': {exc}")
+
+
 def run_bootstrap():
     """Provision the schema then run first-run seeding. Called once at startup."""
     models.Base.metadata.create_all(bind=engine)
+    ensure_schema_upgrades()
     seed_initial_admin()
     seed_default_llm_provider()

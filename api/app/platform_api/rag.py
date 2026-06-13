@@ -1,3 +1,4 @@
+import hashlib
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
@@ -38,7 +39,9 @@ def _do_index(file_bytes: bytes, filename: str, doc_id: int, db_session_factory)
         db.close()
 
 
-@router.post("/upload", response_model=schemas.RagDocumentOut, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/documents", response_model=schemas.RagDocumentOut, status_code=status.HTTP_201_CREATED)
+@router.post("/upload", response_model=schemas.RagDocumentOut,
+             status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -60,11 +63,34 @@ async def upload_document(
             detail=f"File exceeds {MAX_FILE_SIZE_MB}MB limit."
         )
 
+    # Duplicate guard — reject re-uploads of byte-identical content (regardless
+    # of filename). A prior *failed* indexing attempt is not a duplicate, so the
+    # user can retry; only an existing ready/indexing copy blocks the upload.
+    content_hash = hashlib.sha256(file_bytes).hexdigest()
+    existing = (
+        db.query(models.RagDocument)
+        .filter(
+            models.RagDocument.content_hash == content_hash,
+            models.RagDocument.status != "failed",
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This file is already in the knowledge base as "
+                f"'{existing.filename}' (id={existing.id}, status={existing.status}). "
+                f"Delete it first if you want to re-index."
+            ),
+        )
+
     # Save record to DB with status='indexing'
     doc_record = models.RagDocument(
         user_id=current_user.id,
         filename=file.filename,
         file_type=ext,
+        content_hash=content_hash,
         status="indexing"
     )
     db.add(doc_record)
