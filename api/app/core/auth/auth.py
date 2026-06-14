@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, status, HTTPException, Response, Body, Request
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timezone
 from app.core import database
 from app import schemas, models
@@ -44,7 +44,15 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             headers={"WWW-Authenticate": "Bearer"},
         )
         
-    user = db.query(models.User).filter(models.User.id == session_record.user_id).first()
+    # Eager-load the user's RBAC roles and their granted agents so the per-agent
+    # guard (require_agent) and /getuser can read them without a lazy-load after
+    # the request session has been handed back.
+    user = (
+        db.query(models.User)
+        .options(joinedload(models.User.roles).joinedload(models.Role.agents))
+        .filter(models.User.id == session_record.user_id)
+        .first()
+    )
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -56,6 +64,41 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 def _role(user) -> str:
     return (getattr(user, "role", None) or ("admin" if user.is_admin else "user"))
+
+
+# Agents whose invocation is permission-gated. The default 'chat' and the
+# knowledge-base (RAG) features stay open to every authenticated user, so they
+# are intentionally NOT listed here. Names must match model_router.KNOWN_AGENTS.
+GATED_AGENTS = {
+    "deployment":  "Code Deployment Agent — build & deploy customisations over SSH.",
+    "performance": "Performance Agent — diagnose and tune database performance.",
+    "cloning":     "Cloning Agent — clone EBS environments (prod guard applies).",
+    "patching":    "Patching Agent — run adop / OPatch (maker-checker gated).",
+}
+
+
+def effective_agents(user) -> list[str]:
+    """The gated agents a user may invoke. Admins get all; everyone else gets the
+    union of agents granted by their assigned roles (role_agents)."""
+    if _role(user) == "admin" or user.is_admin:
+        return list(GATED_AGENTS)
+    granted = {a.name for r in (user.roles or []) for a in (r.agents or [])}
+    # Only surface names we actually gate (ignore stale rows).
+    return [name for name in GATED_AGENTS if name in granted]
+
+
+def require_agent(agent_name: str):
+    """Build a dependency that admits a user only if their roles grant
+    `agent_name`. Admins always pass. Used to gate each agent's routes."""
+    def _dep(current_user: models.User = Depends(get_current_user)):
+        if agent_name not in effective_agents(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your role does not grant access to the {agent_name} agent. "
+                       "Contact an administrator.",
+            )
+        return current_user
+    return _dep
 
 
 def get_current_admin(current_user: models.User = Depends(get_current_user)):
@@ -78,19 +121,12 @@ def require_approver(current_user: models.User = Depends(get_current_user)):
     return current_user
 
 
-def require_agent_access(current_user: models.User = Depends(get_current_user)):
-    """Admin or DBA — may invoke agents. The default 'user' role can chat only."""
-    if _role(current_user) not in ("admin", "dba") and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your role can use chat but is not permitted to invoke agents. Contact an administrator.",
-        )
-    return current_user
-
-
 @router.get("/getuser", response_model=schemas.UserWithRolesOut)
 def get_user(current_user: models.User = Depends(get_current_user)):
-    """Get the currently logged in user details, along with roles and agents"""
+    """Get the currently logged in user details, along with roles and agents."""
+    # Attach the resolved gated-agent grants so the frontend can show/lock the
+    # agent menu without re-deriving the role→agent union itself.
+    current_user.allowed_agents = effective_agents(current_user)
     return current_user
 
 

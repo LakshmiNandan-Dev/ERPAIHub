@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import json
 from app.core import database
 from app import schemas, models
+from app.ml import training_service
 from app.core.auth.auth import get_current_user
 
 router = APIRouter(
@@ -16,6 +17,7 @@ router = APIRouter(
 def submit_feedback(
     message_id: int,
     feedback_data: schemas.FeedbackSubmit,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -42,6 +44,11 @@ def submit_feedback(
 
     db.commit()
     db.refresh(message)
+
+    # Automatically curate this feedback into training examples (and optionally
+    # queue a draft training job). Runs after the response; model activation
+    # stays a manual admin step. Never blocks/breaks the feedback submission.
+    background_tasks.add_task(training_service.auto_ingest_feedback, "chat", current_user.id)
     return message
 
 @router.get("/stats")

@@ -53,7 +53,7 @@
   font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px;
   background: #E5E2D8; color: #73726C;
 }
-.ph-node.source-db, .ph-node.source-apps { background: #FFFFFF; color: #C15F3C; }
+.ph-node.source-db, .ph-node.source-apps { background: #FFFFFF; color: #3D3D3A; }
 .ph-node.target-db, .ph-node.target-apps { background: #E4F2E7; color: #2A7D46; }
 .ph-cmd, .ph-log {
   white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace;
@@ -68,7 +68,7 @@
   flex: 1; background: #FAF9F5; border: 1px solid #E5E2D8; border-radius: 8px;
   padding: 0.6rem 0.8rem; color: #3D3D3A; font-size: 0.9rem;
 }
-.clone-input-row input:focus { outline: none; border-color: #C15F3C; }
+.clone-input-row input:focus { outline: none; border-color: #3D3D3A; }
 .clone-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
 .clone-footer .btn-primary, .clone-footer .btn-outline {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1rem;

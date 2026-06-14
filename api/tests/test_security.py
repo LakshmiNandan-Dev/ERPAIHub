@@ -70,7 +70,7 @@ class TestAccessControl:
         assert r2.status_code == 200
 
     def test_regular_user_cannot_invoke_agents(self, client, admin_headers, admin2_headers, nonprod_env):
-        """TC-SC-01 (role): 'user' role is blocked from invoking agents (require_agent_access)."""
+        """TC-SC-01 (role): a 'user' with no agent-granting roles is blocked from invoking agents (require_agent)."""
         import uuid
         # Register a plain user
         uid = uuid.uuid4().hex[:8]

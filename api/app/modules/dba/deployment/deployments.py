@@ -12,7 +12,7 @@ from app.core import database
 from app import schemas, models
 from app.core.rag import rag_service
 from app.core.llm import llm_service
-from app.core.auth.auth import get_current_user, require_agent_access
+from app.core.auth.auth import get_current_user, require_agent
 
 router = APIRouter(
     prefix="/deployments",
@@ -882,7 +882,7 @@ def trigger_deployment(
     deployment_data: schemas.DeploymentCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access)
+    current_user: models.User = Depends(require_agent("deployment"))
 ):
     """Creates a new deployment run and schedules the agent to deploy it in the background."""
     deployment = models.DeploymentRun(
@@ -1051,7 +1051,7 @@ def retry_deployment(
     id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access)
+    current_user: models.User = Depends(require_agent("deployment"))
 ):
     """Clears existing steps and re-runs a failed or cancelled deployment from scratch."""
     deployment = db.query(models.DeploymentRun).filter(
@@ -1082,7 +1082,7 @@ def migrate_deployment(
     payload: schemas.MigrateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access)
+    current_user: models.User = Depends(require_agent("deployment"))
 ):
     """
     Clone a completed deployment and re-run it against a different target instance.

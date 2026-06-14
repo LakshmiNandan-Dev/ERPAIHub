@@ -108,10 +108,16 @@ export default function ChatLayout({ setAuthToken }) {
     try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; }
   });
 
-  // Role-based access. The default 'user' role can chat but cannot invoke agents;
-  // only Admin/DBA can run agents and reach the Admin Console.
+  // Role-based access. Agent invocation is granted per-agent by the user's
+  // assigned roles (allowed_agents from /auth/getuser); admins get every agent.
+  // Chat and the Knowledge Base are open to all. The Admin Console stays on the
+  // admin/dba tier.
   const role = String(user.role || (user.is_admin ? 'admin' : 'user')).toLowerCase();
-  const canInvokeAgents = role === 'admin' || role === 'dba';
+  const allowedAgents = new Set(user.allowed_agents || []);
+  // Maps an agent-dropdown value to its backend gated-agent name.
+  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching' };
+  const canAgent = (name) => role === 'admin' || allowedAgents.has(name);
+  const canInvokeAgents = role === 'admin' || allowedAgents.size > 0;
   const canAdminConsole = role === 'admin' || role === 'dba';
   const roleLabel = role === 'admin' ? 'Administrator' : role === 'dba' ? 'DBA' : 'Member';
 
@@ -141,8 +147,9 @@ export default function ChatLayout({ setAuthToken }) {
   }, []);
 
   const handleAgentChange = (val) => {
-    // Only Admin/DBA may invoke agents; the default role is limited to chat.
-    if (val !== 'diagnostic' && !canInvokeAgents) {
+    // Gated agents require a role grant; diagnostic chat and the KB stay open.
+    const gated = AGENT_OF[val];
+    if (gated && !canAgent(gated)) {
       setActiveAgent('diagnostic');
       return;
     }
@@ -538,17 +545,17 @@ export default function ChatLayout({ setAuthToken }) {
                 onChange={(e) => handleAgentChange(e.target.value)}
               >
                 <option value="diagnostic">🤖 General Diagnostic Assistant</option>
-                <option value="deployments" disabled={!canInvokeAgents}>🚀 Code Deployment Agent{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="kb" disabled={!canInvokeAgents}>📚 RAG Knowledge Base Agent{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="performance" disabled={!canInvokeAgents}>⚡ Performance Analyzer{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="cloning" disabled={!canInvokeAgents}>🧬 EBS Cloning Agent{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="patching" disabled={!canInvokeAgents}>🩹 EBS Patching Agent{canInvokeAgents ? '' : ' 🔒'}</option>
+                <option value="deployments" disabled={!canAgent('deployment')}>🚀 Code Deployment Agent{canAgent('deployment') ? '' : ' 🔒'}</option>
+                <option value="kb">📚 RAG Knowledge Base Agent</option>
+                <option value="performance" disabled={!canAgent('performance')}>⚡ Performance Analyzer{canAgent('performance') ? '' : ' 🔒'}</option>
+                <option value="cloning" disabled={!canAgent('cloning')}>🧬 EBS Cloning Agent{canAgent('cloning') ? '' : ' 🔒'}</option>
+                <option value="patching" disabled={!canAgent('patching')}>🩹 EBS Patching Agent{canAgent('patching') ? '' : ' 🔒'}</option>
                 <option value="finance" disabled>💸 Cash Management Agent (Soon)</option>
                 <option value="purchasing" disabled>🛒 Purchasing PO Agent (Soon)</option>
               </select>
               {!canInvokeAgents && (
-                <span className="agent-locked-note" title="Your role can use chat but cannot invoke agents.">
-                  🔒 Chat only — agents require Admin/DBA role
+                <span className="agent-locked-note" title="Your role grants no agents. Ask an administrator to assign a role.">
+                  🔒 Chat & Knowledge Base only — agents require a role grant
                 </span>
               )}
             </div>

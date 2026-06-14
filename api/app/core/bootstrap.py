@@ -109,6 +109,62 @@ def seed_default_llm_provider():
         db.close()
 
 
+def seed_rbac_defaults():
+    """
+    Activate the role/agent permission model out of the box.
+
+    1. Ensure an `agents` row exists for every gated agent (deployment,
+       performance, cloning, patching).
+    2. Ensure two default roles: 'DBA' (grants all gated agents) and 'User'
+       (grants none) so the console has something to assign immediately.
+    3. One-time backfill: any non-admin user that has no role yet inherits a
+       role matching their legacy tier (dba → DBA, otherwise → User). This keeps
+       existing accounts working exactly as before the per-agent gate landed.
+
+    Idempotent and best-effort — never blocks startup.
+    """
+    from app.core.auth.auth import GATED_AGENTS
+
+    db = SessionLocal()
+    try:
+        # 1. Gated agents
+        agents = {}
+        for name, desc in GATED_AGENTS.items():
+            agent = db.query(models.Agent).filter(models.Agent.name == name).first()
+            if not agent:
+                agent = models.Agent(name=name, description=desc)
+                db.add(agent)
+            agents[name] = agent
+        db.flush()
+
+        # 2. Default roles
+        dba_role = db.query(models.Role).filter(models.Role.name == "DBA").first()
+        if not dba_role:
+            dba_role = models.Role(name="DBA", description="Full agent access (all EBS agents).")
+            db.add(dba_role)
+        dba_role.agents = list(agents.values())  # always keep DBA granting every agent
+
+        user_role = db.query(models.Role).filter(models.Role.name == "User").first()
+        if not user_role:
+            user_role = models.Role(name="User", description="Chat only — no agent access.")
+            db.add(user_role)
+        db.flush()
+
+        # 3. Backfill users that have never been assigned a role
+        for u in db.query(models.User).filter(models.User.role != "admin").all():
+            if u.roles:
+                continue
+            u.roles = [dba_role] if u.role == "dba" else [user_role]
+
+        db.commit()
+        print("[seed] RBAC defaults ensured (agents + DBA/User roles, users backfilled).")
+    except Exception as exc:  # never block startup on seeding
+        db.rollback()
+        print(f"[seed] Could not seed RBAC defaults: {exc}")
+    finally:
+        db.close()
+
+
 def ensure_schema_upgrades():
     """
     Apply additive column upgrades that create_all can't make to *existing*
@@ -121,6 +177,8 @@ def ensure_schema_upgrades():
         "ALTER TABLE rag_documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS ix_rag_documents_content_hash "
         "ON rag_documents (content_hash)",
+        # Per-task output-token cap for the monitoring drill-down (added 2026-06).
+        "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS token_limit INTEGER",
     ]
     for stmt in statements:
         try:
@@ -136,3 +194,4 @@ def run_bootstrap():
     ensure_schema_upgrades()
     seed_initial_admin()
     seed_default_llm_provider()
+    seed_rbac_defaults()

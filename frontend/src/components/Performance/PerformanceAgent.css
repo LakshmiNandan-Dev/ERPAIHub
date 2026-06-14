@@ -51,7 +51,7 @@
   font-size: 1.05rem;
   font-weight: 700;
   margin: 0;
-  background: linear-gradient(to right, #D97757, #D4A27F);
+  background: linear-gradient(to right, #1F1E1D, #3D3D3A);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -184,7 +184,7 @@
 }
 
 .perf-progress-item.done   { color: #2A7D46; }
-.perf-progress-item.active { color: #D97757; animation: pulse-item 1s infinite; }
+.perf-progress-item.active { color: #3D3D3A; animation: pulse-item 1s infinite; }
 
 @keyframes pulse-item {
   0%, 100% { opacity: 1; }
@@ -325,14 +325,14 @@
 }
 
 .perf-status-badge.idle       { background: rgba(138, 136, 127,0.2); color: #73726C; }
-.perf-status-badge.running    { background: rgba(217, 119, 87,0.2);  color: #D97757; animation: pulse-item 1s infinite; }
+.perf-status-badge.running    { background: rgba(217, 119, 87,0.2);  color: #3D3D3A; animation: pulse-item 1s infinite; }
 .perf-status-badge.complete   { background: rgba(16,185,129,0.2);  color: #2A7D46; }
 .perf-status-badge.error      { background: rgba(239,68,68,0.2);   color: #BF4A3C; }
 
 .perf-phase-bar {
   padding: 0.5rem 1.25rem;
   font-size: 0.78rem;
-  color: #D97757;
+  color: #3D3D3A;
   border-bottom: 1px solid var(--border-color);
   background: rgba(217, 119, 87,0.05);
   display: flex;
@@ -404,7 +404,7 @@
 
 .perf-analysis-md code {
   background: rgba(0,0,0,0.4);
-  color: #C15F3C;
+  color: #3D3D3A;
   padding: 0.12em 0.4em;
   border-radius: 4px;
   font-family: 'Fira Code', monospace;
@@ -423,7 +423,7 @@
 .perf-analysis-md pre code {
   background: none;
   padding: 0;
-  color: #C15F3C;
+  color: #3D3D3A;
   font-size: 0.82rem;
 }
 
@@ -498,7 +498,7 @@
 .awr-subtab.active {
   background: rgba(217, 119, 87,0.15);
   border-color: rgba(217, 119, 87,0.35);
-  color: #D97757;
+  color: #3D3D3A;
 }
 
 /* ── Snap Selector ───────────────────────────────────────────────────── */
@@ -680,7 +680,7 @@
 .awr-section-hdr td {
   font-size: 0.65rem;
   font-weight: 700;
-  color: #D97757;
+  color: #3D3D3A;
   text-transform: uppercase;
   letter-spacing: 0.07em;
   padding: 0.4rem 0.3rem 0.2rem;
@@ -711,7 +711,7 @@
 }
 
 .awr-period-pill.baseline { background: rgba(217, 119, 87,0.07);  border: 1px solid rgba(217, 119, 87,0.2); }
-.awr-period-pill.compare  { background: rgba(204, 120, 92,0.07); border: 1px solid rgba(204, 120, 92,0.2); }
+.awr-period-pill.compare  { background: rgba(0, 0, 0, 0.025); border: 1px solid rgba(0, 0, 0, 0.07); }
 
 .awr-period-pill-label {
   font-weight: 700;
@@ -721,8 +721,8 @@
   flex-shrink: 0;
 }
 
-.awr-period-pill.baseline .awr-period-pill-label { color: #D97757; }
-.awr-period-pill.compare  .awr-period-pill-label { color: #D4A27F; }
+.awr-period-pill.baseline .awr-period-pill-label { color: #3D3D3A; }
+.awr-period-pill.compare  .awr-period-pill-label { color: var(--text-secondary); }
 
 .awr-peak-badge {
   background: rgba(251,191,36,0.15);

@@ -23,7 +23,7 @@
 .auth-header h2 {
   font-size: 1.875rem;
   margin-bottom: 0.5rem;
-  background: linear-gradient(to right, #D97757, #D4A27F);
+  background: linear-gradient(to right, #1F1E1D, #3D3D3A);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }

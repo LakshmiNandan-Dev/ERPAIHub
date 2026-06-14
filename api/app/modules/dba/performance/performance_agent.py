@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 
-from app.core.auth.auth import get_current_user, require_agent_access
+from app.core.auth.auth import get_current_user, require_agent
 from app import models
 from app.core.llm import llm_service
 from app.core import database, config_service, telemetry
@@ -287,7 +287,7 @@ async def analyze_performance(
     payload: PerformanceRequest,
     request: Request,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("performance")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
@@ -642,7 +642,7 @@ async def awr_compare(
     payload: AWRCompareRequest,
     request: Request,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("performance")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
@@ -693,7 +693,7 @@ async def awr_upload(
     file2: Optional[UploadFile] = File(None),
     environment: str = Form(default="EBS"),
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("performance")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None

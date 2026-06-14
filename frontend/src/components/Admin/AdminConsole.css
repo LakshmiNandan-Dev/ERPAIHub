@@ -103,8 +103,8 @@
 .admin-actions button:hover { background: #E5E2D8; color: #1F1E1D; }
 
 .admin-pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.68rem; font-weight: 600; margin-right: 0.3rem; }
-.admin-pill.admin { background: #FFFFFF; color: #A8703F; }
-.admin-pill.sso { background: #FFFFFF; color: #C15F3C; }
+.admin-pill.admin { background: #FFFFFF; color: var(--text-secondary); }
+.admin-pill.sso { background: #FFFFFF; color: #3D3D3A; }
 .admin-pill.ok { background: #E4F2E7; color: #2A7D46; }
 .admin-pill.off { background: #F7E0DC; color: #BF4A3C; }
 
@@ -183,7 +183,7 @@
   color: #3D3D3A;
   font-size: 0.86rem;
 }
-.admin-field input:focus, .admin-field select:focus { outline: none; border-color: #C15F3C; }
+.admin-field input:focus, .admin-field select:focus { outline: none; border-color: #3D3D3A; }
 .admin-row { display: flex; gap: 0.6rem; }
 .admin-row .admin-field { flex: 1; }
 
@@ -203,6 +203,23 @@
   border-radius: 10px;
   padding: 0.8rem 0.9rem;
 }
+.mon-card.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.mon-card.clickable:hover {
+  border-color: var(--accent-primary);
+  box-shadow: 0 2px 10px -4px rgba(217, 119, 87, 0.4);
+  transform: translateY(-1px);
+}
+.mon-card.clickable .mon-card-value { color: var(--accent-primary); }
+
+/* Tasks drill-down modal — wider than the standard form modal */
+.mon-tasks-modal {
+  width: min(900px, 94vw);
+  max-height: 84vh;
+}
+.mon-tasks-modal .admin-form-body { overflow: auto; }
 .mon-card-label {
   font-size: 0.72rem;
   text-transform: uppercase;

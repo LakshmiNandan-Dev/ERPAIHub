@@ -55,7 +55,7 @@
 }
 .ph-node.db { background: #E4F2E7; color: #2A7D46; }
 .ph-node.grid { background: #F5EAD2; color: #B27A12; }
-.ph-node.apps { background: #FFFFFF; color: #C15F3C; }
+.ph-node.apps { background: #FFFFFF; color: #3D3D3A; }
 .ph-cmd, .ph-log {
   white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace;
   font-size: 0.74rem; background: #FAF9F5; border: 1px solid #FFFFFF; border-radius: 6px;
@@ -69,7 +69,7 @@
   flex: 1; background: #FAF9F5; border: 1px solid #E5E2D8; border-radius: 8px;
   padding: 0.6rem 0.8rem; color: #3D3D3A; font-size: 0.9rem;
 }
-.patch-input-row input:focus { outline: none; border-color: #C15F3C; }
+.patch-input-row input:focus { outline: none; border-color: #3D3D3A; }
 .patch-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
 .patch-footer .btn-primary, .patch-footer .btn-outline {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1rem;
@@ -114,4 +114,4 @@
   display: flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; color: #3D3D3A;
   margin-bottom: 0.55rem; cursor: pointer;
 }
-.patch-live-toggle input { width: 15px; height: 15px; accent-color: #C15F3C; }
+.patch-live-toggle input { width: 15px; height: 15px; accent-color: #3D3D3A; }

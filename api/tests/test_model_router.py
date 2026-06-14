@@ -41,15 +41,22 @@ class TestComplexityClassifier:
 
 class TestRouting:
 
-    def test_no_policy_complex_routes_large(self):
-        prov, model, reason = mr.resolve(_db_with(None), "chat", "openai", None,
+    def test_auto_complex_routes_large(self):
+        # "auto" opts a request into complexity routing without a policy.
+        prov, model, reason = mr.resolve(_db_with(None), "chat", "openai", "auto",
                                          "analyze and optimize this query plan")
         assert (prov, model) == ("openai", "gpt-4o")
         assert reason.startswith("large")
 
-    def test_no_policy_simple_routes_small(self):
-        prov, model, reason = mr.resolve(_db_with(None), "chat", "openai", None, "what is adop?")
+    def test_auto_simple_routes_small(self):
+        prov, model, reason = mr.resolve(_db_with(None), "chat", "openai", "auto", "what is adop?")
         assert model == "gpt-4o-mini" and reason.startswith("small")
+
+    def test_no_policy_no_auto_is_passthrough(self):
+        # A bare route_text must NOT route when there's no policy and no "auto".
+        _, model, reason = mr.resolve(_db_with(None), "chat", "openai", None,
+                                      "analyze and optimize this query plan")
+        assert model is None and reason == "no-route"
 
     def test_explicit_model_wins(self):
         prov, model, reason = mr.resolve(_db_with(None), "chat", "openai", "gpt-4o", "what is x?")

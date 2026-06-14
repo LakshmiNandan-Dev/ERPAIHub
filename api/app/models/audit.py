@@ -40,6 +40,9 @@ class UsageEvent(Base):
     prompt_tokens = Column(Integer, nullable=False, server_default='0')
     completion_tokens = Column(Integer, nullable=False, server_default='0')
     total_tokens = Column(Integer, nullable=False, server_default='0')
+    # Output-token cap that applied to this call (max_tokens / num_predict), when
+    # one was set. Null = uncapped / provider default. Shown in the task drill-down.
+    token_limit = Column(Integer, nullable=True)
     context_chars = Column(Integer, nullable=False, server_default='0')
     duration_ms = Column(Integer, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'), index=True)

@@ -49,10 +49,13 @@ def _env_bool(name: str, default: str = "1") -> bool:
 RAG_RERANK_ENABLED = _env_bool("RAG_RERANK_ENABLED", "1")
 RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 RAG_RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "20"))  # first-stage fetch
-# Cross-encoder relevance floor (ms-marco logits: >0 ≈ relevant). Chunks scoring
-# below this are dropped; if none clear the bar the query is treated as a local
-# miss and (optionally) routed to web search.
-RAG_RERANK_MIN_SCORE = float(os.getenv("RAG_RERANK_MIN_SCORE", "0.0"))
+# Cross-encoder relevance floor (ms-marco logits). Chunks scoring below this are
+# dropped; if none clear the bar the query is treated as a local miss (no context
+# injected) so the model abstains rather than grounding on off-topic chunks.
+# Observed separation on this corpus: genuinely-relevant chunks score ~5-6, while
+# off-topic "nearest" chunks score ~1-2 — so a floor of ~2 cleanly drops the
+# noise that was otherwise injected as authoritative KB and inviting fabrication.
+RAG_RERANK_MIN_SCORE = float(os.getenv("RAG_RERANK_MIN_SCORE", "2.0"))
 # When the local KB has no confident match, ground the answer with a live
 # DuckDuckGo search instead of returning nothing.
 RAG_WEB_FALLBACK_ENABLED = _env_bool("RAG_WEB_FALLBACK_ENABLED", "1")

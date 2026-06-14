@@ -76,7 +76,7 @@ def record_http(user_id, username, endpoint, method, status, req_bytes, resp_byt
 
 
 def record_llm(user_id, username, endpoint, provider, model,
-               prompt_tokens, completion_tokens, context_chars):
+               prompt_tokens, completion_tokens, context_chars, token_limit=None):
     prompt_tokens = int(prompt_tokens or 0)
     completion_tokens = int(completion_tokens or 0)
     total = prompt_tokens + completion_tokens
@@ -116,6 +116,7 @@ def record_llm(user_id, username, endpoint, provider, model,
                 provider=provider, model=model,
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 total_tokens=total, context_chars=int(context_chars or 0),
+                token_limit=int(token_limit) if token_limit else None,
             ))
             db.commit()
         finally:
@@ -243,7 +244,9 @@ def get_overview(window_s: int = ACTIVE_WINDOW_S):
             })
     except Exception:
         pass
-    # Durable 24h token total (survives Redis restarts)
+    # Durable totals (survive Redis restarts): 24h tokens + all-time task count.
+    # A "task" is one LLM call (usage_events row with kind='llm').
+    live["total_tasks"] = 0
     try:
         db = database.SessionLocal()
         try:
@@ -253,11 +256,63 @@ def get_overview(window_s: int = ACTIVE_WINDOW_S):
                 .filter(models.UsageEvent.kind == "llm", models.UsageEvent.created_at >= since)
                 .scalar()
             )
+            live["total_tasks"] = _int(
+                db.query(func.count(models.UsageEvent.id))
+                .filter(models.UsageEvent.kind == "llm")
+                .scalar()
+            )
         finally:
             db.close()
     except Exception:
         pass
     return live
+
+
+def get_tasks(limit: int = 100, offset: int = 0, date_from=None, date_to=None):
+    """
+    Recent LLM tasks (one per call) for the monitoring drill-down: input/output
+    tokens and the output-token limit that applied. Returns {tasks, total, ...}.
+
+    ``date_from`` / ``date_to`` optionally restrict the window (the UI defaults to
+    the last 24 hours); ``total`` reflects the count within that window.
+    """
+    limit = max(1, min(int(limit or 100), 500))
+    offset = max(0, int(offset or 0))
+    out = {"tasks": [], "total": 0, "limit": limit, "offset": offset}
+    try:
+        db = database.SessionLocal()
+        try:
+            U = models.UsageEvent
+            base = db.query(U).filter(U.kind == "llm")
+            if date_from is not None:
+                base = base.filter(U.created_at >= date_from)
+            if date_to is not None:
+                base = base.filter(U.created_at <= date_to)
+            out["total"] = _int(base.with_entities(func.count(U.id)).scalar())
+            rows = (
+                base.order_by(U.created_at.desc())
+                .offset(offset).limit(limit).all()
+            )
+            out["tasks"] = [
+                {
+                    "id": r.id,
+                    "created_at": r.created_at.timestamp() if r.created_at else 0,
+                    "username": r.username or (f"user{r.user_id}" if r.user_id else "—"),
+                    "endpoint": r.endpoint or "—",
+                    "provider": r.provider or "—",
+                    "model": r.model or "—",
+                    "prompt_tokens": _int(r.prompt_tokens),
+                    "completion_tokens": _int(r.completion_tokens),
+                    "total_tokens": _int(r.total_tokens),
+                    "token_limit": r.token_limit,
+                }
+                for r in rows
+            ]
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return out
 
 
 # ── Response-quality / accuracy aggregation ─────────────────────────────────────

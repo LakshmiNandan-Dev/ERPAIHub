@@ -179,13 +179,19 @@ def resolve(
     if has_explicit and not provider_overridden:
         return eff_provider, requested_model, "explicit"
 
-    # 3. Decide whether to route at all. Engage only when the caller opted in
-    #    (model unset / "auto" / a route_text was supplied) or a policy forces a
-    #    tier. Otherwise leave the model alone (preserves legacy behaviour).
-    routing_on = ROUTING_ENABLED and (policy is None or policy.routing_enabled)
-    wants_route = is_auto or bool(route_text) or provider_overridden or (policy and policy.force_tier)
+    # 3. Decide whether to route at all. Engage ONLY on explicit opt-in:
+    #    model == "auto", or a per-agent policy the admin configured. A bare
+    #    route_text must NOT override the caller's model / credential default —
+    #    otherwise routing would change the model for every request even when no
+    #    routing was set up (and could pick a model that isn't installed).
+    if policy is not None:
+        routing_on = ROUTING_ENABLED and policy.routing_enabled
+        wants_route = True
+    else:
+        routing_on = ROUTING_ENABLED
+        wants_route = is_auto
     if not (routing_on and wants_route):
-        # Nothing to do; if provider was overridden we still return it.
+        # Leave the model untouched (provider override, if any, still returned).
         return eff_provider, requested_model, "no-route"
 
     tiers = _default_tiers(eff_provider)
