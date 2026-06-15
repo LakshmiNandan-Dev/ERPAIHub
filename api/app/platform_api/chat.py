@@ -21,6 +21,15 @@ import os
 _OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_URL = f"{_OLLAMA_BASE}/api/chat"
 
+# Output-token caps for chat generation. Simple/short turns (greetings, "ok",
+# yes/no) don't need a long answer; capping them keeps responses snappy on
+# CPU-only inference where every generated token is slow. 0 = uncapped.
+CHAT_SIMPLE_MAX_TOKENS = int(os.getenv("CHAT_SIMPLE_MAX_TOKENS", "96"))
+CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "0"))  # cap for substantive turns; 0 = provider default
+# Low sampling temperature for grounded answers — keeps the model anchored to the
+# retrieved context instead of confabulating. Tunable without a redeploy.
+CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.15"))
+
 
 def get_ebs_fallback_response(query: str) -> str:
     query_lower = query.lower()
@@ -169,8 +178,56 @@ async def _maybe_compress_session(
     return combined
 
 
-def _build_ollama_messages(messages, message_content: str, rag_context: str, context_block: str = "") -> list:
-    """Build the full Ollama messages list with system prompt and chat history."""
+def _ground(rag_context: str, question: str) -> str:
+    """Wrap a user question with the retrieved knowledge-base context and a strict
+    grounding instruction: prefer the context, cite it, and abstain rather than
+    fabricate when it doesn't cover the question."""
+    return (
+        "[KNOWLEDGE BASE]\n"
+        f"{rag_context}\n"
+        "[END KNOWLEDGE BASE]\n\n"
+        "Answer the QUESTION using the knowledge base above as the authoritative source, and cite the source "
+        "for the specifics you use. If the knowledge base does not contain the answer, say it isn't in the "
+        "knowledge base and give only the general guidance you are confident about — do not invent table names, "
+        "profile options, API signatures, patch numbers, or file paths to fill the gap.\n\n"
+        f"QUESTION: {question}"
+    )
+
+
+def _no_context(question: str) -> str:
+    """Wrap a substantive question for which retrieval found no confident
+    knowledge-base match. Tells the model not to fabricate specifics — the main
+    failure mode of small local models on niche EBS questions."""
+    return (
+        "No knowledge-base entry was found for this question. Answer only from well-established, standard "
+        "Oracle EBS knowledge. Do NOT invent or guess specific command syntax, parameter names, file paths, "
+        "table/column names, profile options, or patch numbers. If you are not certain of the exact command, "
+        "say so and tell the user to verify against the official Oracle documentation rather than giving an "
+        "unverified command.\n\n"
+        f"QUESTION: {question}"
+    )
+
+
+def _build_ollama_messages(messages, message_content: str, rag_context: str,
+                           context_block: str = "", no_context_guard: bool = False) -> list:
+    """Build the full Ollama messages list with system prompt and chat history.
+
+    When ``rag_context`` is empty and ``no_context_guard`` is set (a substantive
+    query that retrieved nothing), the current question is wrapped with an
+    anti-fabrication instruction so the model abstains instead of inventing
+    commands."""
+    # Drop orphaned user turns — a user message immediately followed by another
+    # user message (no assistant reply in between). These occur when a previous
+    # turn's generation failed (the user message is persisted before the LLM
+    # call, but no assistant message is saved on error). Left in, the dangling
+    # earlier question pollutes context and the model answers it instead of the
+    # current message. The final message (the current question) is always kept.
+    if messages:
+        messages = [m for i, m in enumerate(messages)
+                    if not (m.role == "user"
+                            and i + 1 < len(messages)
+                            and messages[i + 1].role == "user")]
+
     # Sliding window — keep only the most recent messages verbatim
     if len(messages) > _MAX_HISTORY_MESSAGES:
         messages = messages[-_MAX_HISTORY_MESSAGES:]
@@ -180,7 +237,15 @@ def _build_ollama_messages(messages, message_content: str, rag_context: str, con
         "Help developers with PL/SQL package compilation, SQL script execution, ADOP patching, FNDLOAD data uploads, "
         "Forms compilation, Workflow uploads, OAF page imports, SSH-based deployments, and general EBS configuration tasks. "
         "Provide complete, accurate command examples and scripts tailored to Oracle EBS 12.x environments. "
-        "When a question is ambiguous, ask for clarification rather than guessing."
+        "When a question is ambiguous, ask for clarification rather than guessing.\n\n"
+        "GROUNDING RULES — follow these strictly:\n"
+        "- When a message includes a [KNOWLEDGE BASE] block, treat it as the authoritative source and base your "
+        "answer on it. Cite the source filename for facts you draw from it.\n"
+        "- Do NOT invent table names, column names, profile options, API/package signatures, patch numbers, or file "
+        "paths. If a specific detail is not in the knowledge base or established Oracle EBS fundamentals, say so plainly.\n"
+        "- If the knowledge base does not contain the answer, reply that it isn't in the knowledge base and give only "
+        "the general guidance you are confident about — do not fabricate specifics to fill the gap.\n"
+        "- Prefer saying \"I'm not certain\" over presenting a guess as fact."
     )
     system_prompt = {"role": "system", "content": system_content}
 
@@ -195,35 +260,22 @@ def _build_ollama_messages(messages, message_content: str, rag_context: str, con
     for msg in messages[:-1]:
         ollama_msgs.append({"role": msg.role, "content": msg.content})
         
-    # Inject RAG context directly into the current active user message
+    # Inject RAG context (or a no-context guard) into the current user message.
+    def _wrap(text: str) -> str:
+        if rag_context:
+            return _ground(rag_context, text)          # KB hit → ground + cite + abstain
+        if no_context_guard:
+            return _no_context(text)                   # substantive miss → don't fabricate
+        return text                                    # simple query → leave as-is
+
     if messages:
         last_msg = messages[-1]
-        if last_msg.role == "user" and rag_context:
-            injected_content = (
-                "[VERIFIED REFERENCE DOCUMENTATION]\n"
-                f"{rag_context}\n"
-                "[END VERIFIED REFERENCE DOCUMENTATION]\n\n"
-                "INSTRUCTION: If the verified reference documentation above is relevant to the question below, you may use it to provide a more accurate answer. "
-                "Otherwise, feel free to ignore it and answer the user's question directly using general Oracle EBS guidelines.\n\n"
-                f"QUESTION: {last_msg.content}"
-            )
-            ollama_msgs.append({"role": "user", "content": injected_content})
+        if last_msg.role == "user":
+            ollama_msgs.append({"role": "user", "content": _wrap(last_msg.content)})
         else:
             ollama_msgs.append({"role": last_msg.role, "content": last_msg.content})
     else:
-        # Fallback if messages list is empty
-        if rag_context:
-            injected_content = (
-                "[VERIFIED REFERENCE DOCUMENTATION]\n"
-                f"{rag_context}\n"
-                "[END VERIFIED REFERENCE DOCUMENTATION]\n\n"
-                "INSTRUCTION: If the verified reference documentation above is relevant to the question below, you may use it to answer. "
-                "Otherwise, ignore it and answer directly.\n\n"
-                f"QUESTION: {message_content}"
-            )
-            ollama_msgs.append({"role": "user", "content": injected_content})
-        else:
-            ollama_msgs.append({"role": "user", "content": message_content})
+        ollama_msgs.append({"role": "user", "content": _wrap(message_content)})
             
     return [system_prompt] + ollama_msgs
 
@@ -311,7 +363,8 @@ async def stream_message(
     # Resolve the API key (and model/base_url fallbacks) from the admin-managed
     # credential store when the browser didn't supply one.
     llm_provider, llm_model, llm_api_key, llm_base_url = config_service.resolve_llm(
-        llm_provider, llm_model, llm_api_key, llm_base_url, db, agent="chat"
+        llm_provider, llm_model, llm_api_key, llm_base_url, db, agent="chat",
+        route_text=message_data.content,
     )
     # 1. Verify session
     session = db.query(models.ChatSession).filter(
@@ -615,10 +668,12 @@ async def stream_message(
     )
 
     # 5. RAG context — skip for simple queries (is_simple_query computed at step 2.5)
+    # Web fallback is disabled here: under strict grounding the context is treated
+    # as authoritative, and unverified web snippets would be a hallucination source.
     rag_context = ""
     if not is_simple_query:
         try:
-            rag_context = rag_service.query_rag(message_data.content)
+            rag_context = rag_service.query_rag(message_data.content, allow_web_fallback=False)
         except Exception as e:
             print(f"[RAG] query_rag failed: {e}")
             rag_context = ""
@@ -676,7 +731,8 @@ async def stream_message(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-    llm_messages = _build_ollama_messages(messages, message_data.content, rag_context, context_block)
+    llm_messages = _build_ollama_messages(messages, message_data.content, rag_context, context_block,
+                                          no_context_guard=not is_simple_query)
 
     # Telemetry: measure the assembled context size and capture token usage.
     prompt_text = "".join(m.get("content", "") for m in llm_messages)
@@ -686,6 +742,7 @@ async def stream_message(
     # 6. Stream generator — yields SSE lines
     async def event_stream():
         full_content = []
+        _gen_t0 = time.monotonic()
         telemetry.stream_open(current_user.id)
         if rag_context:
             rag_label = "📚 **RAG Knowledge Base Agent Invoked!** Searching indexed reference documentation... \n\n"
@@ -698,8 +755,11 @@ async def stream_message(
             buffering = True
             buffer_text = ""
 
+            # Cap output: tight for simple/short turns, configurable for the rest.
+            _out_cap = CHAT_SIMPLE_MAX_TOKENS if is_simple_query else CHAT_MAX_TOKENS
             async for token in llm_service.stream_tokens(
-                llm_messages, llm_provider, llm_model, llm_api_key, llm_base_url, usage=usage
+                llm_messages, llm_provider, llm_model, llm_api_key, llm_base_url,
+                usage=usage, max_tokens=(_out_cap or None), temperature=CHAT_TEMPERATURE,
             ):
                 if buffering:
                     buffer_text += token
@@ -816,7 +876,18 @@ async def stream_message(
                         prompt_tokens=usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text),
                         completion_tokens=usage.get("completion_tokens") or telemetry.est_tokens(assembled),
                         context_chars=context_chars,
+                        # Only the Anthropic stream sets an explicit output cap (4096);
+                        # other providers stream uncapped (null shows as "—").
+                        token_limit=4096 if llm_provider == "anthropic" else None,
                     )
+                    # Generation metric: substantive turns only (greetings skip RAG).
+                    # grounded = answered with retrieved KB context.
+                    if not is_simple_query:
+                        background_tasks.add_task(
+                            telemetry.record_generation,
+                            grounded=bool(rag_context),
+                            latency_ms=(time.monotonic() - _gen_t0) * 1000,
+                        )
                 except Exception as save_err:
                     print(f"[Stream] Failed to save assistant message: {save_err}")
                 finally:

@@ -20,7 +20,7 @@ from app import models
 from app.modules.dba.patching import patching_service, patch_exec
 from app.core.safety import prod_guard
 from app.core.audit import audit_service
-from app.core.auth.auth import get_current_user, require_agent_access, require_approver
+from app.core.auth.auth import get_current_user, require_agent, require_approver
 
 router = APIRouter(prefix="/patching", tags=["Patching Agent"])
 
@@ -157,7 +157,7 @@ class AgentRequest(BaseModel):
 @router.post("/agent")
 def patch_agent(payload: AgentRequest,
                 db: Session = Depends(database.get_db),
-                current_user: models.User = Depends(require_agent_access)):
+                current_user: models.User = Depends(require_agent("patching"))):
     ctx = {k: str(payload.context.get(k) or "") for k in _ALL_KEYS}
     field, question = _next_field(ctx)
 
@@ -272,7 +272,7 @@ def _arm_interactive(run, db):
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_patch(payload: PatchCreate, db: Session = Depends(database.get_db),
-                 current_user: models.User = Depends(require_agent_access)):
+                 current_user: models.User = Depends(require_agent("patching"))):
     env = _resolve_env(db, payload.target_environment)
     if not env:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -481,7 +481,7 @@ def adop_status_endpoint(run_id: int, db: Session = Depends(database.get_db),
 
 @router.post("/{run_id}/phase")
 def run_adop_phase(run_id: int, payload: PhaseRequest, db: Session = Depends(database.get_db),
-                   current_user: models.User = Depends(require_agent_access)):
+                   current_user: models.User = Depends(require_agent("patching"))):
     """Run (simulate) a single adop phase on demand — prepare / apply / finalize /
     cutover / cleanup / fs_clone / abort — or 'status' to just report state."""
     run = _owned_adop_run(run_id, db, current_user)

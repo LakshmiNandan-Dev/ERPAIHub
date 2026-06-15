@@ -12,9 +12,9 @@ from typing import List, Optional
 from app.core import database, crypto
 from app import schemas, models
 from app.common import utils
-from app.core.llm import llm_service, llm_guard_service
+from app.core.llm import llm_service, llm_guard_service, model_router
 from app.core.integrations import cred_test
-from app.core.auth.auth import get_current_admin, require_approver
+from app.core.auth.auth import get_current_admin, require_approver, GATED_AGENTS
 
 _ROLES = ("admin", "dba", "user")
 
@@ -22,6 +22,19 @@ _ROLES = ("admin", "dba", "user")
 def _norm_role(role):
     r = (role or "user").lower()
     return r if r in _ROLES else "user"
+
+
+def _sync_user_roles(db, user, role_ids):
+    """Replace a user's RBAC role assignments with the given role ids."""
+    if role_ids is None:
+        return
+    roles = db.query(models.Role).filter(models.Role.id.in_(role_ids)).all() if role_ids else []
+    found = {r.id for r in roles}
+    missing = set(role_ids) - found
+    if missing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Unknown role id(s): {sorted(missing)}")
+    user.roles = roles
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -89,6 +102,7 @@ def create_user(payload: schemas.AdminUserCreate,
         is_admin=(role == "admin"),
     )
     db.add(user)
+    _sync_user_roles(db, user, payload.role_ids)
     db.commit()
     db.refresh(user)
     return user
@@ -120,6 +134,8 @@ def update_user(user_id: int, payload: schemas.AdminUserUpdate,
                                 detail="You cannot change your own admin role")
         user.role = new_role
         user.is_admin = (new_role == "admin")
+
+    _sync_user_roles(db, user, payload.role_ids)
 
     db.commit()
     db.refresh(user)
@@ -179,6 +195,109 @@ def delete_user(user_id: int,
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     db.delete(user)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Roles & agent permissions (RBAC)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _role_out(r: models.Role) -> dict:
+    return {
+        "id": r.id, "name": r.name, "description": r.description,
+        "agents": [{"name": a.name, "description": a.description} for a in r.agents],
+        "user_count": len(r.users),
+    }
+
+
+def _resolve_agents(db, agent_names):
+    """Map gated-agent names to Agent rows, rejecting unknown names. Missing
+    rows for known gated agents are created on the fly so role grants don't
+    depend on bootstrap seeding order."""
+    names = list(dict.fromkeys(agent_names or []))   # dedupe, preserve order
+    unknown = [n for n in names if n not in GATED_AGENTS]
+    if unknown:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Unknown agent(s): {unknown}")
+    if not names:
+        return []
+    existing = {a.name: a for a in db.query(models.Agent).filter(models.Agent.name.in_(names)).all()}
+    resolved = []
+    for n in names:
+        agent = existing.get(n)
+        if not agent:
+            agent = models.Agent(name=n, description=GATED_AGENTS[n])
+            db.add(agent)
+            db.flush()
+        resolved.append(agent)
+    return resolved
+
+
+@router.get("/agents", response_model=List[schemas.AgentBrief])
+def list_gated_agents(_: models.User = Depends(get_current_admin)):
+    """The catalog of permission-gated agents a role can grant."""
+    return [{"name": name, "description": desc} for name, desc in GATED_AGENTS.items()]
+
+
+@router.get("/roles", response_model=List[schemas.RoleDetailOut])
+def list_roles(db: Session = Depends(database.get_db),
+               _: models.User = Depends(get_current_admin)):
+    rows = db.query(models.Role).order_by(models.Role.name.asc()).all()
+    return [_role_out(r) for r in rows]
+
+
+@router.post("/roles", response_model=schemas.RoleDetailOut, status_code=status.HTTP_201_CREATED)
+def create_role(payload: schemas.RoleCreate,
+                db: Session = Depends(database.get_db),
+                _: models.User = Depends(get_current_admin)):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role name is required")
+    if db.query(models.Role).filter(models.Role.name == name).first():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"A role named '{name}' already exists.")
+    role = models.Role(name=name, description=payload.description)
+    role.agents = _resolve_agents(db, payload.agent_names)
+    db.add(role)
+    db.commit()
+    db.refresh(role)
+    return _role_out(role)
+
+
+@router.patch("/roles/{role_id}", response_model=schemas.RoleDetailOut)
+def update_role(role_id: int, payload: schemas.RoleUpdate,
+                db: Session = Depends(database.get_db),
+                _: models.User = Depends(get_current_admin)):
+    role = db.query(models.Role).filter(models.Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role name cannot be empty")
+        clash = db.query(models.Role).filter(models.Role.name == new_name,
+                                             models.Role.id != role_id).first()
+        if clash:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"A role named '{new_name}' already exists.")
+        role.name = new_name
+    if payload.description is not None:
+        role.description = payload.description
+    if payload.agent_names is not None:
+        role.agents = _resolve_agents(db, payload.agent_names)
+    db.commit()
+    db.refresh(role)
+    return _role_out(role)
+
+
+@router.delete("/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_role(role_id: int,
+                db: Session = Depends(database.get_db),
+                _: models.User = Depends(get_current_admin)):
+    role = db.query(models.Role).filter(models.Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+    db.delete(role)   # association rows in user_roles / role_agents are cleared too
     db.commit()
 
 
@@ -424,6 +543,70 @@ def delete_llm_credential(cred_id: int,
     if not c:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
     db.delete(c)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Per-agent LLM routing policy
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/agent-policies/meta", response_model=schemas.AgentRoutingMeta)
+def agent_routing_meta(_: models.User = Depends(get_current_admin)):
+    """Known agents + per-provider tier defaults, for populating the admin form."""
+    providers = ("ollama", "openai", "anthropic", "gemini")
+    return {
+        "agents": model_router.KNOWN_AGENTS,
+        "tier_defaults": {p: model_router._default_tiers(p) for p in providers},
+        "routing_enabled": model_router.ROUTING_ENABLED,
+    }
+
+
+@router.get("/agent-policies", response_model=List[schemas.AgentLlmPolicyOut])
+def list_agent_policies(db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    return db.query(models.AgentLlmPolicy).order_by(models.AgentLlmPolicy.agent.asc()).all()
+
+
+@router.post("/agent-policies", response_model=schemas.AgentLlmPolicyOut, status_code=status.HTTP_201_CREATED)
+def create_agent_policy(payload: schemas.AgentLlmPolicyCreate,
+                        db: Session = Depends(database.get_db),
+                        admin: models.User = Depends(get_current_admin)):
+    if payload.force_tier not in (None, "small", "large"):
+        raise HTTPException(status_code=400, detail="force_tier must be 'small', 'large', or null")
+    if db.query(models.AgentLlmPolicy).filter(models.AgentLlmPolicy.agent == payload.agent).first():
+        raise HTTPException(status_code=409, detail=f"A policy for agent '{payload.agent}' already exists.")
+    p = models.AgentLlmPolicy(created_by=admin.id, **payload.model_dump())
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.patch("/agent-policies/{policy_id}", response_model=schemas.AgentLlmPolicyOut)
+def update_agent_policy(policy_id: int, payload: schemas.AgentLlmPolicyUpdate,
+                        db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    p = db.query(models.AgentLlmPolicy).filter(models.AgentLlmPolicy.id == policy_id).first()
+    if not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("force_tier") not in (None, "small", "large"):
+        raise HTTPException(status_code=400, detail="force_tier must be 'small', 'large', or null")
+    for field, val in data.items():
+        setattr(p, field, val)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+@router.delete("/agent-policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_agent_policy(policy_id: int,
+                        db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    p = db.query(models.AgentLlmPolicy).filter(models.AgentLlmPolicy.id == policy_id).first()
+    if not p:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found")
+    db.delete(p)
     db.commit()
 
 

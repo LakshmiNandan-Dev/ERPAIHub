@@ -36,3 +36,7 @@ frontend/dist/
 
 # Generated product documents, diagrams & their build scripts (kept local, not pushed)
 document/
+docs/
+
+# Local-only Compose override (native host Ollama) — do not deploy
+docker-compose.override.yml

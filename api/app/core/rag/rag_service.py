@@ -4,6 +4,7 @@ Supports PDF and TXT file ingestion, chunking, and semantic search.
 """
 import os
 import json
+import time
 import hashlib
 import chromadb
 from chromadb.config import Settings
@@ -49,10 +50,13 @@ def _env_bool(name: str, default: str = "1") -> bool:
 RAG_RERANK_ENABLED = _env_bool("RAG_RERANK_ENABLED", "1")
 RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 RAG_RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "20"))  # first-stage fetch
-# Cross-encoder relevance floor (ms-marco logits: >0 ≈ relevant). Chunks scoring
-# below this are dropped; if none clear the bar the query is treated as a local
-# miss and (optionally) routed to web search.
-RAG_RERANK_MIN_SCORE = float(os.getenv("RAG_RERANK_MIN_SCORE", "0.0"))
+# Cross-encoder relevance floor (ms-marco logits). Chunks scoring below this are
+# dropped; if none clear the bar the query is treated as a local miss (no context
+# injected) so the model abstains rather than grounding on off-topic chunks.
+# Observed separation on this corpus: genuinely-relevant chunks score ~5-6, while
+# off-topic "nearest" chunks score ~1-2 — so a floor of ~2 cleanly drops the
+# noise that was otherwise injected as authoritative KB and inviting fabrication.
+RAG_RERANK_MIN_SCORE = float(os.getenv("RAG_RERANK_MIN_SCORE", "2.0"))
 # When the local KB has no confident match, ground the answer with a live
 # DuckDuckGo search instead of returning nothing.
 RAG_WEB_FALLBACK_ENABLED = _env_bool("RAG_WEB_FALLBACK_ENABLED", "1")
@@ -298,6 +302,8 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
     Falls back to legacy embedding-distance filtering when the reranker can't
     load, so behaviour degrades gracefully in air-gapped environments.
     """
+    from app.core import telemetry   # lazy import avoids any import cycle
+    _t0 = time.monotonic()
     collection = _get_collection()
     have_corpus = collection.count() > 0
 
@@ -312,12 +318,16 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         try:
             hit = _r().get(cache_key)
             if hit is not None:
+                telemetry.record_rag(hit=bool(hit), cached=True,
+                                     latency_ms=(time.monotonic() - _t0) * 1000)
                 return hit
         except Exception:
             pass
 
     result_str = ""
     from_web = False
+    top_score = None
+    relevant = []
 
     if have_corpus:
         # Stage 1 — recall: pull a wide candidate set when reranking, else just N.
@@ -331,10 +341,10 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         distances = results.get("distances", [[]])[0]
 
         # Stage 2 — precision: cross-encoder rerank, keep those above the floor.
-        relevant = []
         if RAG_RERANK_ENABLED:
             ranked = _rerank(query_text, docs)
             if ranked:
+                top_score = ranked[0][1]   # best candidate's cross-encoder score
                 relevant = [doc for doc, score in ranked[:n_results]
                             if score >= RAG_RERANK_MIN_SCORE]
         if not relevant and not (RAG_RERANK_ENABLED and _get_reranker() is not None):
@@ -358,6 +368,12 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         except Exception:
             pass
 
+    telemetry.record_rag(
+        hit=bool(result_str), cached=False, from_web=from_web,
+        num_chunks=len(relevant),
+        top_score=(top_score if (result_str and not from_web) else None),
+        latency_ms=(time.monotonic() - _t0) * 1000,
+    )
     return result_str
 
 

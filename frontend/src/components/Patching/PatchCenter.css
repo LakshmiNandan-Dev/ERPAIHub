@@ -1,21 +1,21 @@
 .patch-overlay {
   position: fixed; inset: 0;
-  background: rgba(8, 12, 22, 0.72); backdrop-filter: blur(4px);
+  background: rgba(250, 249, 245, 0.72); backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center; z-index: 1200;
 }
 .patch-container {
   width: min(960px, 94vw); height: min(88vh, 860px);
-  background: #0f1626; border: 1px solid #233049; border-radius: 14px;
-  display: flex; flex-direction: column; overflow: hidden; color: #e6ecf5;
+  background: #FAF9F5; border: 1px solid #E5E2D8; border-radius: 14px;
+  display: flex; flex-direction: column; overflow: hidden; color: #3D3D3A;
   box-shadow: 0 24px 80px rgba(0,0,0,.5);
 }
 .patch-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0.9rem 1.3rem; border-bottom: 1px solid #233049; background: #131c2e;
+  padding: 0.9rem 1.3rem; border-bottom: 1px solid #E5E2D8; background: #FFFFFF;
 }
 .patch-header h3 { margin: 0; font-size: 1.05rem; }
-.patch-sub { font-size: 0.72rem; color: #7184a0; font-weight: 400; margin-left: 0.6rem; }
-.patch-close { background: none; border: none; color: #93a4bd; font-size: 1.4rem; cursor: pointer; }
+.patch-sub { font-size: 0.72rem; color: #73726C; font-weight: 400; margin-left: 0.6rem; }
+.patch-close { background: none; border: none; color: #73726C; font-size: 1.4rem; cursor: pointer; }
 .patch-close:hover { color: #fff; }
 
 .patch-body { flex: 1; overflow: hidden; display: flex; }
@@ -25,13 +25,13 @@
 .patch-msg.user { justify-content: flex-end; }
 .patch-bubble {
   max-width: 80%; padding: 0.6rem 0.85rem; border-radius: 12px; font-size: 0.88rem; line-height: 1.45;
-  background: #18233a; border: 1px solid #243755;
+  background: #FFFFFF; border: 1px solid #E5E2D8;
 }
-.patch-msg.user .patch-bubble { background: linear-gradient(135deg, #2e74b5, #1f4e79); border: none; color: #fff; }
+.patch-msg.user .patch-bubble { background: linear-gradient(135deg, #C15F3C, #C15F3C); border: none; color: #fff; }
 .patch-bubble .md p { margin: 0 0 0.4rem; }
 .patch-bubble .md table { border-collapse: collapse; font-size: 0.8rem; margin: 0.4rem 0; }
-.patch-bubble .md th, .patch-bubble .md td { border: 1px solid #2a3a55; padding: 0.25rem 0.5rem; }
-.patch-bubble .md code { background: #0c1322; padding: 0 0.25rem; border-radius: 4px; }
+.patch-bubble .md th, .patch-bubble .md td { border: 1px solid #E5E2D8; padding: 0.25rem 0.5rem; }
+.patch-bubble .md code { background: #FAF9F5; padding: 0 0.25rem; border-radius: 4px; }
 
 .spin { animation: pcspin 1s linear infinite; vertical-align: middle; }
 @keyframes pcspin { to { transform: rotate(360deg); } }
@@ -39,7 +39,7 @@
 /* phases */
 .patch-phases { margin-top: 0.6rem; }
 .patch-phase {
-  background: #111a2b; border: 1px solid #243755; border-radius: 9px;
+  background: #FFFFFF; border: 1px solid #E5E2D8; border-radius: 9px;
   margin-bottom: 0.5rem; padding: 0.2rem 0.6rem;
 }
 .patch-phase summary {
@@ -47,71 +47,71 @@
   padding: 0.45rem 0.2rem; font-size: 0.86rem; font-weight: 600; list-style: none;
 }
 .patch-phase summary::-webkit-details-marker { display: none; }
-.patch-phase .ok { color: #5fd08a; }
+.patch-phase .ok { color: #2A7D46; }
 .ph-title { flex: 1; }
 .ph-node {
   font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.5rem; border-radius: 999px;
-  background: #233049; color: #9fb6d6;
+  background: #E5E2D8; color: #73726C;
 }
-.ph-node.db { background: #16361f; color: #84e1a0; }
-.ph-node.grid { background: #3a2d16; color: #f0c987; }
-.ph-node.apps { background: #1f3a4d; color: #8fd3ff; }
+.ph-node.db { background: #E4F2E7; color: #2A7D46; }
+.ph-node.grid { background: #F5EAD2; color: #B27A12; }
+.ph-node.apps { background: #FFFFFF; color: #3D3D3A; }
 .ph-cmd, .ph-log {
   white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace;
-  font-size: 0.74rem; background: #0a1120; border: 1px solid #1b2538; border-radius: 6px;
-  padding: 0.5rem 0.6rem; margin: 0.3rem 0; color: #cfe0f5;
+  font-size: 0.74rem; background: #FAF9F5; border: 1px solid #FFFFFF; border-radius: 6px;
+  padding: 0.5rem 0.6rem; margin: 0.3rem 0; color: #3D3D3A;
 }
-.ph-cmd { color: #ffd9a0; }
+.ph-cmd { color: #B27A12; }
 
-.patch-footer { border-top: 1px solid #233049; padding: 0.8rem 1.3rem; background: #131c2e; }
+.patch-footer { border-top: 1px solid #E5E2D8; padding: 0.8rem 1.3rem; background: #FFFFFF; }
 .patch-input-row { display: flex; gap: 0.5rem; }
 .patch-input-row input {
-  flex: 1; background: #0c1322; border: 1px solid #2a3a55; border-radius: 8px;
-  padding: 0.6rem 0.8rem; color: #e6ecf5; font-size: 0.9rem;
+  flex: 1; background: #FAF9F5; border: 1px solid #E5E2D8; border-radius: 8px;
+  padding: 0.6rem 0.8rem; color: #3D3D3A; font-size: 0.9rem;
 }
-.patch-input-row input:focus { outline: none; border-color: #2e74b5; }
+.patch-input-row input:focus { outline: none; border-color: #3D3D3A; }
 .patch-actions { display: flex; justify-content: flex-end; gap: 0.6rem; }
 .patch-footer .btn-primary, .patch-footer .btn-outline {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1rem;
   border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
 }
-.patch-footer .btn-primary { background: linear-gradient(135deg, #2e74b5, #1f4e79); color: #fff; border: none; }
-.patch-footer .btn-outline { background: none; border: 1px solid #2a3a55; color: #cfdcf0; }
+.patch-footer .btn-primary { background: linear-gradient(135deg, #C15F3C, #C15F3C); color: #fff; border: none; }
+.patch-footer .btn-outline { background: none; border: 1px solid #E5E2D8; color: #3D3D3A; }
 .patch-footer .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
 .patch-approval { display: flex; flex-direction: column; gap: 0.55rem; }
-.patch-noperm { color: #f0c987; font-size: 0.82rem; flex: 1; align-self: center; }
+.patch-noperm { color: #B27A12; font-size: 0.82rem; flex: 1; align-self: center; }
 
 /* interactive adop cycle */
 .patch-status {
-  background: #111a2b; border: 1px solid #243755; border-radius: 9px;
-  padding: 0.6rem 0.8rem; margin: 0.4rem 0 0.7rem; font-size: 0.84rem; color: #cfe0f5;
+  background: #FFFFFF; border: 1px solid #E5E2D8; border-radius: 9px;
+  padding: 0.6rem 0.8rem; margin: 0.4rem 0 0.7rem; font-size: 0.84rem; color: #3D3D3A;
 }
 .patch-status .st-summary { margin: 0 0 0.35rem; }
-.patch-status .st-meta { font-size: 0.74rem; color: #8aa0c0; }
+.patch-status .st-meta { font-size: 0.74rem; color: #73726C; }
 .patch-pill {
   display: inline-block; font-size: 0.68rem; font-weight: 700; padding: 0.08rem 0.45rem;
-  border-radius: 999px; background: #16361f; color: #84e1a0; margin-right: 0.3rem;
+  border-radius: 999px; background: #E4F2E7; color: #2A7D46; margin-right: 0.3rem;
 }
 .patch-cyclebar { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .patch-cyclebar button {
   display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.45rem 0.7rem;
   border-radius: 8px; font-size: 0.8rem; font-weight: 600; cursor: pointer;
-  background: #18233a; border: 1px solid #2a3a55; color: #cfdcf0;
+  background: #FFFFFF; border: 1px solid #E5E2D8; color: #3D3D3A;
 }
 .patch-cyclebar button:disabled { opacity: 0.4; cursor: default; }
-.patch-cyclebar button.next { background: linear-gradient(135deg, #2e74b5, #1f4e79); color: #fff; border: none; }
-.patch-cyclebar button.danger { border-color: #5a2230; color: #ff9d9d; }
+.patch-cyclebar button.next { background: linear-gradient(135deg, #C15F3C, #C15F3C); color: #fff; border: none; }
+.patch-cyclebar button.danger { border-color: #F7E0DC; color: #BF4A3C; }
 
-.patch-phase .fail { color: #ff8a8a; }
+.patch-phase .fail { color: #BF4A3C; }
 .ph-src {
   font-size: 0.64rem; font-weight: 700; padding: 0.06rem 0.4rem; border-radius: 999px; margin-right: 0.3rem;
 }
-.ph-src.live { background: #16361f; color: #6ee7a0; }
-.ph-src.simulated { background: #2a3550; color: #9fb6d6; }
+.ph-src.live { background: #E4F2E7; color: #2A7D46; }
+.ph-src.simulated { background: #E5E2D8; color: #73726C; }
 
 .patch-live-toggle {
-  display: flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; color: #cfe0f5;
+  display: flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; color: #3D3D3A;
   margin-bottom: 0.55rem; cursor: pointer;
 }
-.patch-live-toggle input { width: 15px; height: 15px; accent-color: #2e74b5; }
+.patch-live-toggle input { width: 15px; height: 15px; accent-color: #3D3D3A; }

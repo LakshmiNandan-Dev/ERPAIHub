@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 
-from app.core.auth.auth import get_current_user, require_agent_access
+from app.core.auth.auth import get_current_user, require_agent
 from app import models
 from app.core.llm import llm_service
 from app.core import database, config_service, telemetry
@@ -287,13 +287,16 @@ async def analyze_performance(
     payload: PerformanceRequest,
     request: Request,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("performance")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
-    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="analyze Oracle EBS database performance diagnostics and recommend optimizations",
+    )
 
     env   = payload.environment or "EBS"
     areas = payload.analysis_areas or ALL_AREAS
@@ -639,13 +642,16 @@ async def awr_compare(
     payload: AWRCompareRequest,
     request: Request,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("performance")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
-    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="analyze Oracle EBS database performance diagnostics and recommend optimizations",
+    )
     env = payload.environment or "EBS"
 
     async def stream():
@@ -687,13 +693,16 @@ async def awr_upload(
     file2: Optional[UploadFile] = File(None),
     environment: str = Form(default="EBS"),
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("performance")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model") or None
     api_key  = request.headers.get("X-LLM-Api-Key") or None
     base_url = request.headers.get("X-LLM-Base-Url") or None
-    provider, model, api_key, base_url = config_service.resolve_llm(provider, model, api_key, base_url, db, agent="performance")
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="analyze Oracle EBS database performance diagnostics and recommend optimizations",
+    )
 
     content1 = (await file1.read()).decode("utf-8", errors="replace")
     parsed1  = _parse_awr_report(content1)

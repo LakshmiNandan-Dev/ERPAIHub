@@ -57,9 +57,11 @@ services:
     restart: always
     environment:
       DATABASE_URL: postgresql://aiuser:aipassword@postgres:5432/erpai_hub
-      OLLAMA_URL: http://ollama:11434
+      # Host-run Ollama (not the bundled container): the API reaches the host's
+      # Ollama via host.docker.internal. Override OLLAMA_URL to use the container.
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       # Default local model used when no per-request/credential model is set.
-      OLLAMA_DEFAULT_MODEL: ${OLLAMA_DEFAULT_MODEL:-llama3.1:8b}
+      OLLAMA_DEFAULT_MODEL: ${OLLAMA_DEFAULT_MODEL:-mistral:7b}
       # Used to encrypt admin-managed secrets (SSH/DB passwords, LLM API keys) at rest.
       # Override with a strong random value in production.
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-insecure-change-me}
@@ -93,13 +95,39 @@ services:
       RAG_RERANK_ENABLED: ${RAG_RERANK_ENABLED:-1}
       RAG_RERANK_MODEL: ${RAG_RERANK_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
       RAG_RERANK_CANDIDATES: ${RAG_RERANK_CANDIDATES:-20}
-      RAG_RERANK_MIN_SCORE: ${RAG_RERANK_MIN_SCORE:-0.0}
+      # Cross-encoder relevance floor: drop off-topic chunks so a no-coverage
+      # query injects no context (model abstains) instead of grounding on noise.
+      RAG_RERANK_MIN_SCORE: ${RAG_RERANK_MIN_SCORE:-2.0}
       RAG_WEB_FALLBACK_ENABLED: ${RAG_WEB_FALLBACK_ENABLED:-1}
       # Deployment-agent cost controls: estimated-token budget per chat request,
       # history window sent to the LLM, and retry cap for transient LLM failures.
       AGENT_TOKEN_BUDGET: ${AGENT_TOKEN_BUDGET:-8000}
       AGENT_HISTORY_MAX_MSGS: ${AGENT_HISTORY_MAX_MSGS:-12}
       AGENT_LLM_MAX_RETRIES: ${AGENT_LLM_MAX_RETRIES:-2}
+      # Chat output caps: tight for simple/short turns (greetings) so they stay
+      # snappy on CPU inference; 0 = uncapped / provider default for the rest.
+      CHAT_SIMPLE_MAX_TOKENS: ${CHAT_SIMPLE_MAX_TOKENS:-96}
+      CHAT_MAX_TOKENS: ${CHAT_MAX_TOKENS:-0}
+      # Auto-curate user feedback into training examples on submit. Optionally
+      # queue a DRAFT training job every N new examples (0 = assemble only).
+      # Model registration/activation always stay manual (human review gate).
+      FEEDBACK_AUTO_ASSEMBLE: ${FEEDBACK_AUTO_ASSEMBLE:-1}
+      FEEDBACK_AUTO_TRAIN_THRESHOLD: ${FEEDBACK_AUTO_TRAIN_THRESHOLD:-0}
+      # Per-agent LLM routing: complexity classifier picks small vs large model.
+      # Per-agent provider/model overrides are managed in Admin Console → Agent Routing.
+      LLM_ROUTING_ENABLED: ${LLM_ROUTING_ENABLED:-1}
+      LLM_ROUTING_LARGE_THRESHOLD: ${LLM_ROUTING_LARGE_THRESHOLD:-2}
+      # Provider tier defaults (override to match locally available models).
+      LLM_TIER_OPENAI_SMALL: ${LLM_TIER_OPENAI_SMALL:-gpt-4o-mini}
+      LLM_TIER_OPENAI_LARGE: ${LLM_TIER_OPENAI_LARGE:-gpt-4o}
+      LLM_TIER_ANTHROPIC_SMALL: ${LLM_TIER_ANTHROPIC_SMALL:-claude-haiku-4-5-20251001}
+      LLM_TIER_ANTHROPIC_LARGE: ${LLM_TIER_ANTHROPIC_LARGE:-claude-sonnet-4-6}
+      LLM_TIER_GEMINI_SMALL: ${LLM_TIER_GEMINI_SMALL:-gemini-2.0-flash}
+      LLM_TIER_GEMINI_LARGE: ${LLM_TIER_GEMINI_LARGE:-gemini-2.5-pro}
+      # Ollama tiers default to OLLAMA_DEFAULT_MODEL (routing no-op) until a
+      # heavier local model is set here.
+      LLM_TIER_OLLAMA_SMALL: ${LLM_TIER_OLLAMA_SMALL:-}
+      LLM_TIER_OLLAMA_LARGE: ${LLM_TIER_OLLAMA_LARGE:-}
     ports:
       - "8000:8000"
     volumes:

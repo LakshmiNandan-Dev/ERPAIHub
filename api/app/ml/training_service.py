@@ -8,6 +8,7 @@ host) and registers the resulting GGUF as an Ollama model. Cloud providers are
 never trained here; the gateway only ever fine-tunes local models.
 """
 import io
+import os
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -18,6 +19,19 @@ from app import models
 
 AGENTS = ("chat", "deployment", "performance", "cloning", "knowledge_base")
 SOURCES = ("feedback", "upload", "rag", "agent_run")
+
+# ── Automatic feedback ingestion ────────────────────────────────────────────────
+# When a user rates a response, curate that feedback into TrainingExamples without
+# waiting for an admin to click "Assemble". Model registration/activation always
+# stay manual — that's the human review gate (see auto_ingest_feedback).
+AUTO_ASSEMBLE = os.getenv("FEEDBACK_AUTO_ASSEMBLE", "1").lower() not in ("0", "false", "no")
+# Once this many new feedback-derived examples accumulate since the last job, queue
+# a *draft* training job automatically. 0 = never (assemble only).
+AUTO_TRAIN_THRESHOLD = int(os.getenv("FEEDBACK_AUTO_TRAIN_THRESHOLD", "0"))
+AUTO_TRAIN_BASE = os.getenv("FEEDBACK_AUTO_TRAIN_BASE",
+                            os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.2:1b"))
+# Agent bucket feedback examples are filed under (feedback is collected globally).
+AUTO_FEEDBACK_AGENT = os.getenv("FEEDBACK_AUTO_AGENT", "chat")
 
 # Per-agent system prompt baked into the resulting model's Modelfile.
 _AGENT_SYSTEM = {
@@ -165,6 +179,61 @@ def assemble(db, agent: str, sources, created_by=None) -> dict:
         added[ex["source"]] = added.get(ex["source"], 0) + 1
     db.commit()
     return {"added": sum(added.values()), "by_source": added}
+
+
+def auto_ingest_feedback(agent: str = None, created_by=None) -> dict:
+    """
+    Background hook (best-effort, never raises): curate the latest human/AI
+    feedback into TrainingExamples, and — if FEEDBACK_AUTO_TRAIN_THRESHOLD > 0 —
+    queue a *draft* training job once enough new examples have accumulated since
+    the last job. Never bundles, registers, or activates a model: those stay
+    manual admin steps so unreviewed feedback can't silently reach production.
+    Opens its own DB session (safe to call from a FastAPI BackgroundTask).
+    """
+    from app.core import database
+
+    if not AUTO_ASSEMBLE:
+        return {"assembled": 0, "job_created": None}
+    agent = agent if agent in AGENTS else AUTO_FEEDBACK_AGENT
+    if agent not in AGENTS:
+        agent = "chat"
+
+    db = database.SessionLocal()
+    try:
+        res = assemble(db, agent, ["feedback"], created_by=created_by)
+        out = {"agent": agent, "assembled": res.get("added", 0), "job_created": None}
+
+        if AUTO_TRAIN_THRESHOLD > 0:
+            c = counts(db, agent)
+            total = c["sft"] + c["dpo"]
+            last = (db.query(models.TrainingJob)
+                    .filter(models.TrainingJob.agent == agent)
+                    .order_by(models.TrainingJob.id.desc()).first())
+            last_total = (last.sft_count + last.dpo_count) if last else 0
+            if (total - last_total) >= AUTO_TRAIN_THRESHOLD and (c["sft"] or c["dpo"]):
+                j = models.TrainingJob(
+                    agent=agent, base_model=AUTO_TRAIN_BASE, method="both",
+                    target_model_tag=f"oraebs-{agent}:auto", status="draft",
+                    sft_count=c["sft"], dpo_count=c["dpo"], params={"auto": True},
+                    created_by=created_by,
+                    notes="Auto-queued from accumulated feedback. Review, bundle, "
+                          "train and register manually before activating.")
+                db.add(j); db.commit(); db.refresh(j)
+                out["job_created"] = j.id
+                print(f"[feedback-auto] queued draft training job #{j.id} for agent={agent} "
+                      f"({c['sft']} SFT / {c['dpo']} DPO)")
+        if out["assembled"]:
+            print(f"[feedback-auto] agent={agent}: +{out['assembled']} training example(s)")
+        return out
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"[feedback-auto] ingest failed for agent={agent}: {exc}")
+        return {"assembled": 0, "job_created": None, "error": str(exc)}
+    finally:
+        db.close()
 
 
 def counts(db, agent: str) -> dict:

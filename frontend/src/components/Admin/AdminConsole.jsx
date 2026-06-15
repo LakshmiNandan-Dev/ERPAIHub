@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
 const TABS = [
   { key: 'monitoring',   label: 'Monitoring',    icon: Activity,      roles: ['admin'] },
   { key: 'users',        label: 'Users',         icon: Users,         roles: ['admin', 'dba'] },
+  { key: 'roles',        label: 'Roles',         icon: KeyRound,      roles: ['admin'] },
   { key: 'servers',      label: 'SSH Servers',   icon: Server,        roles: ['admin'] },
   { key: 'environments', label: 'Environments',  icon: Globe,         roles: ['admin'] },
   { key: 'llm',          label: 'LLM Providers', icon: Cpu,           roles: ['admin'] },
+  { key: 'routing',      label: 'Agent Routing', icon: Split,         roles: ['admin'] },
   { key: 'training',     label: 'Training',      icon: GraduationCap, roles: ['admin'] },
   { key: 'integrations', label: 'Integrations',  icon: Link2,         roles: ['admin'] },
   { key: 'sso',          label: 'Authentication', icon: LogIn,        roles: ['admin'] },
@@ -48,9 +50,11 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
         <div className="admin-body">
           {tab === 'monitoring' && <MonitoringTab />}
           {tab === 'users' && <UsersTab />}
+          {tab === 'roles' && <RolesTab />}
           {tab === 'servers' && <ServersTab />}
           {tab === 'environments' && <EnvironmentsTab />}
           {tab === 'llm' && <LlmTab />}
+          {tab === 'routing' && <RoutingTab />}
           {tab === 'training' && <TrainingTab />}
           {tab === 'integrations' && <IntegrationsTab />}
           {tab === 'sso' && <SsoTab />}
@@ -97,21 +101,29 @@ function TestResult({ result }) {
 
 function UsersTab() {
   const { rows, error, loading, reload, setError } = useResource('/admin/users');
+  const [roles, setRoles] = useState([]);     // defined RBAC roles (for assignment)
   const [form, setForm] = useState(null); // null=closed; {} =new; {...}=edit
 
-  const blank = { username: '', email: '', password: '', role: 'user', is_active: true };
+  useEffect(() => { api.get('/admin/roles').then(r => setRoles(r.data)).catch(() => {}); }, []);
+
+  const blank = { username: '', email: '', password: '', role: 'user', is_active: true, role_ids: [] };
+
+  const toggleRole = (id) => {
+    const has = form.role_ids?.includes(id);
+    setForm({ ...form, role_ids: has ? form.role_ids.filter(x => x !== id) : [...(form.role_ids || []), id] });
+  };
 
   const save = async (e) => {
     e.preventDefault();
     try {
       if (form.id) {
-        const body = { email: form.email, is_active: form.is_active, role: form.role };
+        const body = { email: form.email, is_active: form.is_active, role: form.role, role_ids: form.role_ids };
         if (form.password) body.password = form.password;
         await api.patch(`/admin/users/${form.id}`, body);
       } else {
         await api.post('/admin/users', {
           username: form.username, email: form.email,
-          password: form.password, role: form.role,
+          password: form.password, role: form.role, role_ids: form.role_ids,
         });
       }
       setForm(null); reload();
@@ -170,7 +182,8 @@ function UsersTab() {
               <td>{u.username}</td>
               <td>{u.email}</td>
               <td>{roleBadge(u)}
-                  {u.auth_provider !== 'local' && <span className="admin-pill sso">{u.auth_provider}</span>}</td>
+                  {u.auth_provider !== 'local' && <span className="admin-pill sso">{u.auth_provider}</span>}
+                  {(u.roles || []).map(r => <span key={r.id} className="admin-pill">{r.name}</span>)}</td>
               <td>{statusCell(u)}</td>
               <td className="admin-actions">
                 {u.approval_status === 'pending' && (
@@ -179,7 +192,7 @@ function UsersTab() {
                     <button className="admin-reject" title="Reject" onClick={() => reject(u.id)}>✗</button>
                   </>
                 )}
-                <button onClick={() => setForm({ ...u, password: '' })}><Pencil size={14} /></button>
+                <button onClick={() => setForm({ ...u, password: '', role_ids: (u.roles || []).map(r => r.id) })}><Pencil size={14} /></button>
                 <button onClick={() => remove(u.id)}><Trash2 size={14} /></button>
               </td>
             </tr>
@@ -213,14 +226,113 @@ function UsersTab() {
             </select>
           </Field>
           <p className="admin-muted" style={{ fontSize: '0.72rem', marginTop: '-0.2rem' }}>
-            <strong>User</strong> can chat only. <strong>DBA</strong> and <strong>Admin</strong> can invoke agents and approve requests; only Admin manages servers, keys & SSO.
+            <strong>User</strong> can chat only. <strong>DBA</strong> and <strong>Admin</strong> can approve requests; only Admin manages servers, keys & SSO.
+            Agent access is granted by the <strong>roles</strong> below (Admin always has every agent).
           </p>
+          <Field label="Agent access (roles)">
+            <div className="admin-svc">
+              {roles.map(r => (
+                <label key={r.id} className="admin-check" title={(r.agents || []).map(a => a.name).join(', ') || 'no agents'}>
+                  <input type="checkbox" checked={form.role_ids?.includes(r.id)} onChange={() => toggleRole(r.id)} /> {r.name}
+                  {(r.agents?.length > 0) && <span className="admin-muted"> · {r.agents.map(a => a.name).join(', ')}</span>}
+                </label>
+              ))}
+              {roles.length === 0 && <span className="admin-muted">No roles defined yet — create one in the Roles tab.</span>}
+            </div>
+          </Field>
           {form.id && (
             <label className="admin-check">
               <input type="checkbox" checked={!!form.is_active}
                      onChange={e => setForm({ ...form, is_active: e.target.checked })} /> Active
             </label>
           )}
+        </FormModal>
+      )}
+    </div>
+  );
+}
+
+/* ── Roles & agent permissions ──────────────────────────────────────────────── */
+
+function RolesTab() {
+  const { rows, error, loading, reload, setError } = useResource('/admin/roles');
+  const [agents, setAgents] = useState([]);   // catalog of gated agents
+  const [form, setForm] = useState(null);
+
+  useEffect(() => { api.get('/admin/agents').then(r => setAgents(r.data)).catch(() => {}); }, []);
+
+  const blank = { name: '', description: '', agent_names: [] };
+
+  const toggleAgent = (name) => {
+    const has = form.agent_names?.includes(name);
+    setForm({ ...form, agent_names: has ? form.agent_names.filter(a => a !== name) : [...(form.agent_names || []), name] });
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    const body = { name: form.name, description: form.description, agent_names: form.agent_names };
+    try {
+      if (form.id) await api.patch(`/admin/roles/${form.id}`, body);
+      else await api.post('/admin/roles', body);
+      setForm(null); reload();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Delete this role? Users lose the agent access it granted.')) return;
+    try { await api.delete(`/admin/roles/${id}`); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Roles {loading && <span className="admin-muted">· loading…</span>}</h4>
+        <button className="admin-btn-primary" onClick={() => setForm({ ...blank })}><Plus size={14} /> New Role</button>
+      </div>
+      {error && <p className="admin-error">{error}</p>}
+      <p className="admin-muted">
+        A role grants access to one or more agents; assign roles to users in the <strong>Users</strong> tab.
+        Administrators always have every agent, and Chat / Knowledge Base are open to all.
+      </p>
+
+      <table className="admin-table">
+        <thead><tr><th>Name</th><th>Description</th><th>Agents</th><th>Users</th><th></th></tr></thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.id}>
+              <td><strong>{r.name}</strong></td>
+              <td className="admin-muted">{r.description || '—'}</td>
+              <td>
+                {r.agents?.length > 0
+                  ? r.agents.map(a => <span key={a.name} className="admin-pill ok">{a.name}</span>)
+                  : <span className="admin-muted">none (chat only)</span>}
+              </td>
+              <td>{r.user_count}</td>
+              <td className="admin-actions">
+                <button onClick={() => setForm({ id: r.id, name: r.name, description: r.description || '', agent_names: (r.agents || []).map(a => a.name) })}><Pencil size={14} /></button>
+                <button onClick={() => remove(r.id)}><Trash2 size={14} /></button>
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 && !loading && <tr><td colSpan={5} className="admin-muted">No roles yet.</td></tr>}
+        </tbody>
+      </table>
+
+      {form && (
+        <FormModal title={form.id ? `Edit Role — ${form.name}` : 'New Role'} onClose={() => setForm(null)} onSubmit={save}>
+          <Field label="Name"><input value={form.name} required onChange={e => setForm({ ...form, name: e.target.value })} /></Field>
+          <Field label="Description"><input value={form.description || ''} onChange={e => setForm({ ...form, description: e.target.value })} /></Field>
+          <Field label="Agent permissions">
+            <div className="admin-svc">
+              {agents.map(a => (
+                <label key={a.name} className="admin-check" title={a.description || ''}>
+                  <input type="checkbox" checked={form.agent_names?.includes(a.name)} onChange={() => toggleAgent(a.name)} /> {a.name}
+                </label>
+              ))}
+              {agents.length === 0 && <span className="admin-muted">No gated agents available.</span>}
+            </div>
+          </Field>
         </FormModal>
       )}
     </div>
@@ -564,6 +676,144 @@ function LlmTab() {
   );
 }
 
+/* ── Agent Routing (per-agent provider + complexity model tiers) ────────────── */
+
+const ROUTING_PROVIDERS = ['', 'ollama', 'openai', 'anthropic', 'gemini'];
+
+function RoutingTab() {
+  const { rows, error, loading, reload, setError } = useResource('/admin/agent-policies');
+  const [meta, setMeta] = useState({ agents: [], tier_defaults: {}, routing_enabled: true });
+  const [form, setForm] = useState(null);
+
+  useEffect(() => {
+    api.get('/admin/agent-policies/meta').then(r => setMeta(r.data)).catch(() => {});
+  }, []);
+
+  const blank = {
+    agent: '', provider: '', small_model: '', large_model: '',
+    force_tier: '', routing_enabled: true, is_active: true,
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    // Normalise empty strings to null so the backend keeps provider/tier defaults.
+    const body = {
+      ...form,
+      provider: form.provider || null,
+      small_model: form.small_model || null,
+      large_model: form.large_model || null,
+      force_tier: form.force_tier || null,
+    };
+    try {
+      if (form.id) await api.patch(`/admin/agent-policies/${form.id}`, body);
+      else await api.post('/admin/agent-policies', body);
+      setForm(null); reload();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Delete this agent policy?')) return;
+    try { await api.delete(`/admin/agent-policies/${id}`); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  // Show what a policy resolves to, falling back to the provider's tier defaults.
+  const tierHint = (p, tier) => {
+    const explicit = tier === 'small' ? p.small_model : p.large_model;
+    if (explicit) return explicit;
+    const prov = p.provider || '(request)';
+    const def = meta.tier_defaults[p.provider]?.[tier];
+    return def ? `${def} · default` : `${prov} default`;
+  };
+
+  // Agents that don't yet have a policy (one policy per agent).
+  const used = new Set(rows.map(r => r.agent));
+  const freeAgents = meta.agents.filter(a => !used.has(a));
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Agent Routing {loading && <span className="admin-muted">· loading…</span>}</h4>
+        <button className="admin-btn-primary" disabled={freeAgents.length === 0}
+                onClick={() => setForm({ ...blank, agent: freeAgents[0] || '' })}>
+          <Plus size={14} /> New Agent Policy
+        </button>
+      </div>
+      {error && <p className="admin-error">{error}</p>}
+      <p className="admin-muted">
+        Each agent can use its own provider and a small/large model pair. A heuristic reads the task
+        and routes simple requests to the small model, complex ones to the large model. Leave a field
+        blank to use the provider default. {meta.routing_enabled ? '' : '⚠️ Routing is globally disabled (LLM_ROUTING_ENABLED=0).'}
+      </p>
+
+      <table className="admin-table">
+        <thead><tr>
+          <th>Agent</th><th>Provider</th><th>Small (simple)</th><th>Large (complex)</th>
+          <th>Mode</th><th>Active</th><th></th>
+        </tr></thead>
+        <tbody>
+          {rows.map(p => (
+            <tr key={p.id}>
+              <td><strong>{p.agent}</strong></td>
+              <td>{p.provider || <span className="admin-muted">request</span>}</td>
+              <td>{tierHint(p, 'small')}</td>
+              <td>{tierHint(p, 'large')}</td>
+              <td>
+                {!p.routing_enabled ? <span className="admin-pill">off</span>
+                  : p.force_tier ? <span className="admin-pill">forced: {p.force_tier}</span>
+                  : <span className="admin-pill ok">auto</span>}
+              </td>
+              <td>{p.is_active ? <span className="admin-pill ok">yes</span> : <span className="admin-pill">no</span>}</td>
+              <td className="admin-actions">
+                <button onClick={() => setForm({ ...p, provider: p.provider || '', small_model: p.small_model || '', large_model: p.large_model || '', force_tier: p.force_tier || '' })}><Pencil size={14} /></button>
+                <button onClick={() => remove(p.id)}><Trash2 size={14} /></button>
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 && !loading && <tr><td colSpan={7} className="admin-muted">No agent policies — all agents use the request/default model.</td></tr>}
+        </tbody>
+      </table>
+
+      {form && (
+        <FormModal title={form.id ? `Edit Policy — ${form.agent}` : 'New Agent Policy'} onClose={() => setForm(null)} onSubmit={save}>
+          <Field label="Agent">
+            <select value={form.agent} disabled={!!form.id}
+                    onChange={e => setForm({ ...form, agent: e.target.value })}>
+              {(form.id ? [form.agent] : freeAgents).map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </Field>
+          <Field label="Provider (blank = keep request/default)">
+            <select value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })}>
+              {ROUTING_PROVIDERS.map(p => <option key={p} value={p}>{p || '— request/default —'}</option>)}
+            </select>
+          </Field>
+          <Field label="Small model (simple tasks)">
+            <input value={form.small_model} placeholder={meta.tier_defaults[form.provider]?.small || 'provider default'}
+                   onChange={e => setForm({ ...form, small_model: e.target.value })} />
+          </Field>
+          <Field label="Large model (complex tasks)">
+            <input value={form.large_model} placeholder={meta.tier_defaults[form.provider]?.large || 'provider default'}
+                   onChange={e => setForm({ ...form, large_model: e.target.value })} />
+          </Field>
+          <Field label="Tier selection">
+            <select value={form.force_tier} onChange={e => setForm({ ...form, force_tier: e.target.value })}>
+              <option value="">Auto (classify task complexity)</option>
+              <option value="small">Always small</option>
+              <option value="large">Always large</option>
+            </select>
+          </Field>
+          <label className="admin-check">
+            <input type="checkbox" checked={!!form.routing_enabled} onChange={e => setForm({ ...form, routing_enabled: e.target.checked })} /> Routing enabled
+          </label>
+          <label className="admin-check">
+            <input type="checkbox" checked={!!form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} /> Active
+          </label>
+        </FormModal>
+      )}
+    </div>
+  );
+}
+
 /* ── Integrations (Git / Confluence) ────────────────────────────────────────── */
 
 function IntegrationsTab() {
@@ -694,19 +944,22 @@ function MonitoringTab() {
   const [ov, setOv] = useState(null);
   const [users, setUsers] = useState([]);
   const [qual, setQual] = useState(null);
+  const [rag, setRag] = useState(null);
   const [error, setError] = useState('');
+  const [showTasks, setShowTasks] = useState(false);
 
   useEffect(() => {
     let active = true;
     const load = async () => {
       try {
-        const [o, u, q] = await Promise.all([
+        const [o, u, q, g] = await Promise.all([
           api.get('/admin/monitoring/overview'),
           api.get('/admin/monitoring/users'),
           api.get('/admin/monitoring/quality'),
+          api.get('/admin/monitoring/rag'),
         ]);
         if (!active) return;
-        setOv(o.data); setUsers(u.data.users || []); setQual(q.data); setError('');
+        setOv(o.data); setUsers(u.data.users || []); setQual(q.data); setRag(g.data); setError('');
       } catch (e) { if (active) setError(e.response?.data?.detail || e.message); }
     };
     load();
@@ -718,6 +971,7 @@ function MonitoringTab() {
 
   const cards = [
     { label: 'Connected Users', value: fmtNum(ov.connected_users) },
+    { label: 'Tasks Executed', value: fmtNum(ov.total_tasks), sub: 'LLM calls · click to view', onClick: () => setShowTasks(true) },
     { label: 'Open Streams', value: fmtNum(ov.open_streams) },
     { label: 'Total Requests', value: fmtNum(ov.total_requests) },
     { label: 'Total Tokens', value: fmtNum(ov.total_tokens), sub: `${fmtNum(ov.prompt_tokens)} in · ${fmtNum(ov.completion_tokens)} out` },
@@ -735,13 +989,20 @@ function MonitoringTab() {
 
       <div className="mon-cards">
         {cards.map(c => (
-          <div key={c.label} className="mon-card">
+          <div key={c.label} className={`mon-card${c.onClick ? ' clickable' : ''}`}
+               onClick={c.onClick} role={c.onClick ? 'button' : undefined}
+               tabIndex={c.onClick ? 0 : undefined}
+               onKeyDown={c.onClick ? (e) => { if (e.key === 'Enter') c.onClick(); } : undefined}>
             <div className="mon-card-label">{c.label}</div>
             <div className="mon-card-value">{c.value}</div>
             {c.sub && <div className="mon-card-sub">{c.sub}</div>}
           </div>
         ))}
       </div>
+
+      {showTasks && <TasksModal onClose={() => setShowTasks(false)} />}
+
+      {rag && <RagPanel rag={rag} />}
 
       {qual && <QualityPanel qual={qual} />}
 
@@ -788,6 +1049,144 @@ function MonitoringTab() {
 }
 
 function pct(v) { return v == null ? '—' : `${v}%`; }
+
+// Friendly label for the endpoint string recorded against each task.
+const TASK_LABELS = {
+  'chat.stream': 'Chat', 'chat.stream.cache_hit': 'Chat (cached)',
+  'performance.analyze': 'Performance', 'deployment.agent': 'Deployment',
+};
+function taskLabel(ep) { return TASK_LABELS[ep] || ep; }
+
+// Format a Date as a datetime-local input value (YYYY-MM-DDTHH:mm, local time).
+function _localDt(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+// Default Tasks window: the last 24 hours.
+function _last24h() {
+  const now = new Date();
+  return { date_from: _localDt(new Date(now.getTime() - 24 * 3600 * 1000)), date_to: _localDt(now) };
+}
+
+function TasksModal({ onClose }) {
+  const [draft, setDraft] = useState(_last24h);     // pending filter (edited in inputs)
+  const [filter, setFilter] = useState(_last24h);   // applied filter (drives the fetch)
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [limit, setLimit] = useState(100);
+
+  useEffect(() => {
+    let active = true;
+    setData(null);
+    api.get('/admin/monitoring/tasks' + buildQs({ ...filter, limit }))
+      .then(r => { if (active) setData(r.data); })
+      .catch(e => { if (active) setError(e.response?.data?.detail || e.message); });
+    return () => { active = false; };
+  }, [filter, limit]);
+
+  const apply = () => { setLimit(100); setFilter(draft); };
+  const resetRange = () => { const d = _last24h(); setDraft(d); setLimit(100); setFilter(d); };
+  const tasks = data?.tasks || [];
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <div className="admin-form mon-tasks-modal" onMouseDown={e => e.stopPropagation()}>
+        <div className="admin-form-header">
+          <h4>Tasks Executed {data && <span className="admin-muted">· {fmtNum(data.total)} LLM calls in range</span>}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          {error && <p className="admin-error">{error}</p>}
+          <p className="admin-muted">
+            Each task is one LLM call. <strong>Input</strong> = prompt tokens, <strong>Output</strong> = completion
+            tokens, <strong>Limit</strong> = the output-token cap that applied (— = uncapped / provider default).
+          </p>
+          <div style={_filterBar}>
+            <FilterLabel label="From">
+              <input style={_fs} type="datetime-local" value={draft.date_from}
+                onChange={e => setDraft(d => ({ ...d, date_from: e.target.value }))} />
+            </FilterLabel>
+            <FilterLabel label="To">
+              <input style={_fs} type="datetime-local" value={draft.date_to}
+                onChange={e => setDraft(d => ({ ...d, date_to: e.target.value }))} />
+            </FilterLabel>
+            <button className="admin-btn-primary" onClick={apply}>Apply</button>
+            <button className="admin-btn-ghost" onClick={resetRange}>Last 24h</button>
+          </div>
+          <table className="admin-table">
+            <thead><tr>
+              <th>Time</th><th>User</th><th>Task</th><th>Provider</th><th>Model</th>
+              <th>Input</th><th>Output</th><th>Total</th><th>Limit</th>
+            </tr></thead>
+            <tbody>
+              {tasks.map(t => (
+                <tr key={t.id}>
+                  <td className="admin-muted">{ago(t.created_at)}</td>
+                  <td>{t.username}</td>
+                  <td>{taskLabel(t.endpoint)}</td>
+                  <td>{t.provider}</td>
+                  <td className="admin-muted">{t.model}</td>
+                  <td>{fmtNum(t.prompt_tokens)}</td>
+                  <td>{fmtNum(t.completion_tokens)}</td>
+                  <td><strong>{fmtNum(t.total_tokens)}</strong></td>
+                  <td>{t.token_limit ? fmtNum(t.token_limit) : <span className="admin-muted">—</span>}</td>
+                </tr>
+              ))}
+              {data && tasks.length === 0 && <tr><td colSpan={9} className="admin-muted">No tasks recorded yet.</td></tr>}
+              {!data && !error && <tr><td colSpan={9} className="admin-muted">Loading…</td></tr>}
+            </tbody>
+          </table>
+          {data && data.total > tasks.length && (
+            <button className="admin-btn-ghost" onClick={() => setLimit(l => l + 100)}>
+              Load more ({fmtNum(tasks.length)} of {fmtNum(data.total)})
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RagPanel({ rag }) {
+  const ms = (v) => (v == null ? '—' : `${fmtNum(v)} ms`);
+  const num = (v) => (v == null ? '—' : v);
+  const cards = [
+    { label: 'Retrievals', value: fmtNum(rag.queries), sub: `${fmtNum(rag.hits)} grounded · ${fmtNum(rag.misses)} abstained` },
+    { label: 'Grounded Hit Rate', value: pct(rag.hit_rate), sub: 'queries that found KB context' },
+    { label: 'Avg Relevance', value: num(rag.avg_relevance), sub: 'cross-encoder top score' },
+    { label: 'Avg Chunks / Hit', value: num(rag.avg_chunks), sub: 'context passages injected' },
+    { label: 'Cache Hit Rate', value: pct(rag.cache_hit_rate), sub: `${fmtNum(rag.cache_hits)} served from cache` },
+    { label: 'Avg Retrieval', value: ms(rag.avg_retrieval_ms), sub: 'embed + rerank time' },
+    { label: 'Grounded Answers', value: pct(rag.grounded_rate), sub: `${fmtNum(rag.grounded)} of ${fmtNum(rag.generations)} answers` },
+    { label: 'Avg Generation', value: ms(rag.avg_generation_ms), sub: 'time to full answer' },
+  ];
+  return (
+    <div>
+      <h4 style={{ margin: '1.4rem 0 0.5rem' }}>
+        RAG Retrieval &amp; Generation{' '}
+        <span className="admin-muted">· bi-encoder recall → cross-encoder rerank → grounded generation</span>
+      </h4>
+      <div className="mon-cards">
+        {cards.map(c => (
+          <div key={c.label} className="mon-card">
+            <div className="mon-card-label">{c.label}</div>
+            <div className="mon-card-value">{c.value}</div>
+            <div className="mon-card-sub">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+      {rag.web_fallbacks > 0 && (
+        <p className="admin-muted" style={{ marginTop: '0.4rem' }}>
+          ⚠️ {fmtNum(rag.web_fallbacks)} retrieval(s) used the live web fallback (unverified) instead of the local KB.
+        </p>
+      )}
+      <p className="admin-muted" style={{ marginTop: '0.4rem', fontSize: '0.72rem' }}>
+        <strong>Grounded hit rate</strong> = queries that cleared the relevance floor and injected KB context; the rest
+        make the model abstain rather than fabricate. Live counters (Redis-backed).
+      </p>
+    </div>
+  );
+}
 
 function QualityPanel({ qual }) {
   const { rlaif: rl, feedback: fb, rlaif_recent: rlR, feedback_recent: fbR } = qual;

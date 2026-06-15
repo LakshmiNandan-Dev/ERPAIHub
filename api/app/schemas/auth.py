@@ -44,6 +44,8 @@ class RoleOut(BaseModel):
 
 class UserWithRolesOut(UserOut):
     roles: list[RoleOut] = []
+    # Gated agents this user may invoke (admin → all; else union of role grants).
+    allowed_agents: list[str] = []
 
 class SessionOut(BaseModel):
     session_token: str

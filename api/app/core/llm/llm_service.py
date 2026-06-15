@@ -53,26 +53,37 @@ async def stream_tokens(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     usage: Optional[dict] = None,
+    max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Yield raw text tokens from the chosen provider.
 
     If a mutable `usage` dict is supplied it is populated with provider-reported
     token counts ("prompt_tokens" / "completion_tokens") as they arrive.
+
+    max_tokens caps the generated output (Ollama num_predict / OpenAI &
+    Anthropic max_tokens / Gemini maxOutputTokens). None = provider default.
+    Capping cheap, short turns (e.g. greetings) avoids the model rambling on
+    CPU-only inference where every output token is slow.
+
+    temperature controls sampling randomness; None = provider default. Pass a low
+    value (~0.1-0.2) for grounded/RAG answers so the model sticks to the supplied
+    context instead of confabulating.
     """
     model = model or DEFAULT_MODELS.get(provider, "llama3.2:1b")
 
     if provider == "openai":
-        async for t in _stream_openai(messages, model, api_key, usage):
+        async for t in _stream_openai(messages, model, api_key, usage, max_tokens, temperature):
             yield t
     elif provider == "anthropic":
-        async for t in _stream_anthropic(messages, model, api_key, usage):
+        async for t in _stream_anthropic(messages, model, api_key, usage, max_tokens, temperature):
             yield t
     elif provider == "gemini":
-        async for t in _stream_gemini(messages, model, api_key, usage):
+        async for t in _stream_gemini(messages, model, api_key, usage, max_tokens, temperature):
             yield t
     else:
-        async for t in _stream_ollama(messages, model, base_url or _OLLAMA_BASE, usage):
+        async for t in _stream_ollama(messages, model, base_url or _OLLAMA_BASE, usage, max_tokens, temperature):
             yield t
 
 
@@ -107,15 +118,20 @@ async def _raise_if_http_error(provider: str, resp):
         raise LLMError(f"{provider} API error (HTTP {resp.status_code}): {detail}")
 
 
-async def _stream_ollama(messages, model, base_url, usage=None):
+async def _stream_ollama(messages, model, base_url, usage=None, max_tokens=None, temperature=None):
     url = f"{base_url.rstrip('/')}/api/chat"
+    body = {"model": model, "messages": messages, "stream": True,
+            "keep_alive": _OLLAMA_KEEP_ALIVE}
+    options = {}
+    if max_tokens:
+        options["num_predict"] = int(max_tokens)
+    if temperature is not None:
+        options["temperature"] = float(temperature)
+    if options:
+        body["options"] = options
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
-            async with client.stream(
-                "POST", url,
-                json={"model": model, "messages": messages, "stream": True,
-                      "keep_alive": _OLLAMA_KEEP_ALIVE}
-            ) as resp:
+            async with client.stream("POST", url, json=body) as resp:
                 await _raise_if_http_error("Ollama", resp)
                 async for line in resp.aiter_lines():
                     if not line.strip():
@@ -145,17 +161,22 @@ async def _stream_ollama(messages, model, base_url, usage=None):
         raise LLMError(f"Ollama connection failed: {exc}")
 
 
-async def _stream_openai(messages, model, api_key, usage=None):
+async def _stream_openai(messages, model, api_key, usage=None, max_tokens=None, temperature=None):
     if not api_key:
         raise LLMError("No OpenAI API key configured. Ask an administrator to add an OpenAI key in the Admin Console.")
+    body = {"model": model, "messages": messages, "stream": True,
+            "stream_options": {"include_usage": True}}
+    if max_tokens:
+        body["max_tokens"] = int(max_tokens)
+    if temperature is not None:
+        body["temperature"] = float(temperature)
     try:
         async with httpx.AsyncClient(timeout=180.0) as client:
             async with client.stream(
                 "POST",
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": messages, "stream": True,
-                      "stream_options": {"include_usage": True}},
+                json=body,
             ) as resp:
                 await _raise_if_http_error("OpenAI", resp)
                 async for line in resp.aiter_lines():
@@ -183,11 +204,14 @@ async def _stream_openai(messages, model, api_key, usage=None):
         raise LLMError(f"Could not reach OpenAI: {exc}")
 
 
-async def _stream_anthropic(messages, model, api_key, usage=None):
+async def _stream_anthropic(messages, model, api_key, usage=None, max_tokens=None, temperature=None):
     if not api_key:
         raise LLMError("No Anthropic API key configured. Ask an administrator to add a Claude key in the Admin Console.")
     system_msg, filtered = _split_system(messages)
-    body: dict = {"model": model, "max_tokens": 4096, "messages": filtered, "stream": True}
+    body: dict = {"model": model, "max_tokens": int(max_tokens) if max_tokens else 4096,
+                  "messages": filtered, "stream": True}
+    if temperature is not None:
+        body["temperature"] = float(temperature)
     if system_msg:
         body["system"] = system_msg
     try:
@@ -231,11 +255,18 @@ async def _stream_anthropic(messages, model, api_key, usage=None):
         raise LLMError(f"Could not reach Anthropic: {exc}")
 
 
-async def _stream_gemini(messages, model, api_key, usage=None):
+async def _stream_gemini(messages, model, api_key, usage=None, max_tokens=None, temperature=None):
     if not api_key:
         raise LLMError("No Gemini API key configured. Ask an administrator to add a Gemini key in the Admin Console.")
     system, contents = _to_gemini(messages)
     body: dict = {"contents": contents}
+    gen_config = {}
+    if max_tokens:
+        gen_config["maxOutputTokens"] = int(max_tokens)
+    if temperature is not None:
+        gen_config["temperature"] = float(temperature)
+    if gen_config:
+        body["generationConfig"] = gen_config
     if system:
         body["system_instruction"] = system
     url = f"{_GEMINI_BASE}/models/{model}:streamGenerateContent?alt=sse&key={api_key}"

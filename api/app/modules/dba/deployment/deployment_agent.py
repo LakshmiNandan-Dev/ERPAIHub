@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Any, List
 
-from app.core.auth.auth import get_current_user, require_agent_access
+from app.core.auth.auth import get_current_user, require_agent
 from app import models
 from app.core.llm import llm_service
 from app.core import database, config_service, telemetry
@@ -688,14 +688,15 @@ async def agent_chat(
     payload: AgentChatRequest,
     request: Request,
     db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(require_agent_access),
+    current_user: models.User = Depends(require_agent("deployment")),
 ):
     provider = request.headers.get("X-LLM-Provider", "ollama")
     model    = request.headers.get("X-LLM-Model", "")
     api_key  = request.headers.get("X-LLM-Api-Key", "")
     base_url = request.headers.get("X-LLM-Base-Url", "")
     provider, model, api_key, base_url = config_service.resolve_llm(
-        provider, model or None, api_key or None, base_url or None, db, agent="deployment"
+        provider, model or None, api_key or None, base_url or None, db, agent="deployment",
+        route_text=payload.user_message,
     )
     model = model or ""
     api_key = api_key or ""

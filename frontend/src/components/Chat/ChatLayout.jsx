@@ -19,6 +19,8 @@ export default function ChatLayout({ setAuthToken }) {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const abortRef = useRef(null);
+  const activeSessionIdRef = useRef(null);
   const [deletingId, setDeletingId] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
@@ -106,10 +108,16 @@ export default function ChatLayout({ setAuthToken }) {
     try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; }
   });
 
-  // Role-based access. The default 'user' role can chat but cannot invoke agents;
-  // only Admin/DBA can run agents and reach the Admin Console.
+  // Role-based access. Agent invocation is granted per-agent by the user's
+  // assigned roles (allowed_agents from /auth/getuser); admins get every agent.
+  // Chat and the Knowledge Base are open to all. The Admin Console stays on the
+  // admin/dba tier.
   const role = String(user.role || (user.is_admin ? 'admin' : 'user')).toLowerCase();
-  const canInvokeAgents = role === 'admin' || role === 'dba';
+  const allowedAgents = new Set(user.allowed_agents || []);
+  // Maps an agent-dropdown value to its backend gated-agent name.
+  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching' };
+  const canAgent = (name) => role === 'admin' || allowedAgents.has(name);
+  const canInvokeAgents = role === 'admin' || allowedAgents.size > 0;
   const canAdminConsole = role === 'admin' || role === 'dba';
   const roleLabel = role === 'admin' ? 'Administrator' : role === 'dba' ? 'DBA' : 'Member';
 
@@ -139,8 +147,9 @@ export default function ChatLayout({ setAuthToken }) {
   }, []);
 
   const handleAgentChange = (val) => {
-    // Only Admin/DBA may invoke agents; the default role is limited to chat.
-    if (val !== 'diagnostic' && !canInvokeAgents) {
+    // Gated agents require a role grant; diagnostic chat and the KB stay open.
+    const gated = AGENT_OF[val];
+    if (gated && !canAgent(gated)) {
       setActiveAgent('diagnostic');
       return;
     }
@@ -215,6 +224,19 @@ export default function ChatLayout({ setAuthToken }) {
     }
   }, [activeSession]);
 
+  // Track the active session id for async stream guards, and abort an in-flight
+  // response when the user leaves its session — so other sessions stay usable
+  // (the partial reply is saved server-side and reappears on return).
+  useEffect(() => {
+    activeSessionIdRef.current = activeSession?.id ?? null;
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        setLoading(false);
+      }
+    };
+  }, [activeSession?.id]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -284,10 +306,18 @@ export default function ChatLayout({ setAuthToken }) {
 
   const cancelRename = () => setRenamingId(null);
 
+  const handleStop = () => {
+    // Abort the in-flight stream. The connection drops, so the backend
+    // generator is cancelled (Ollama stops generating) and its `finally`
+    // persists whatever was produced so far. The partial reply stays on screen.
+    if (abortRef.current) abortRef.current.abort();
+  };
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!inputMessage.trim() || !activeSession) return;
 
+    const streamSessionId = activeSession.id;
     const userMessage = { role: 'user', content: inputMessage };
     setMessages(prev => [...prev, userMessage]);
     const sentContent = inputMessage;
@@ -296,6 +326,9 @@ export default function ChatLayout({ setAuthToken }) {
 
     // Add an empty assistant bubble that we'll fill token by token
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       const token = localStorage.getItem('session_token');
@@ -307,7 +340,8 @@ export default function ChatLayout({ setAuthToken }) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ content: sentContent })
+          body: JSON.stringify({ content: sentContent }),
+          signal: controller.signal
         }
       );
 
@@ -340,40 +374,55 @@ export default function ChatLayout({ setAuthToken }) {
               });
               break;
             }
-            // Append token to last assistant bubble
-            setMessages(prev => {
-              const msgs = [...prev];
-              msgs[msgs.length - 1] = {
-                ...msgs[msgs.length - 1],
-                content: msgs[msgs.length - 1].content + parsed
-              };
-              return msgs;
-            });
+            // Append token to the assistant bubble — only while the user is
+            // still viewing this stream's session (otherwise it's dropped here
+            // and reappears from the DB on return).
+            if (activeSessionIdRef.current === streamSessionId) {
+              setMessages(prev => {
+                const msgs = [...prev];
+                msgs[msgs.length - 1] = {
+                  ...msgs[msgs.length - 1],
+                  content: msgs[msgs.length - 1].content + parsed
+                };
+                return msgs;
+              });
+            }
           } catch { /* skip malformed lines */ }
         }
       }
 
-      // Update session title in sidebar only when it's still the default placeholder
-      const isDefaultTitle = !activeSession.title || activeSession.title === 'New Conversation';
-      if (isDefaultTitle) {
-        const autoTitle = sentContent.substring(0, 50) + (sentContent.length > 50 ? '...' : '');
-        setSessions(prev => prev.map(s =>
-          s.id === activeSession.id ? { ...s, title: autoTitle } : s
-        ));
-        setActiveSession(prev => ({ ...prev, title: autoTitle }));
+      // Only touch the view if the user is still on this stream's session.
+      if (activeSessionIdRef.current === streamSessionId) {
+        // Update session title in sidebar only when it's still the default placeholder
+        const isDefaultTitle = !activeSession.title || activeSession.title === 'New Conversation';
+        if (isDefaultTitle) {
+          const autoTitle = sentContent.substring(0, 50) + (sentContent.length > 50 ? '...' : '');
+          setSessions(prev => prev.map(s =>
+            s.id === activeSession.id ? { ...s, title: autoTitle } : s
+          ));
+          setActiveSession(prev => ({ ...prev, title: autoTitle }));
+        }
+
+        // Synchronize with database to get true message IDs for feedback
+        await fetchMessages(activeSession.id);
       }
 
-      // Synchronize with database to get true message IDs for feedback
-      await fetchMessages(activeSession.id);
-
     } catch (err) {
-      console.error('Failed to send message', err);
-      setMessages(prev => {
-        const msgs = [...prev];
-        msgs[msgs.length - 1] = { role: 'assistant', content: '⚠️ Failed to get a response. Please check that Ollama is running.' };
-        return msgs;
-      });
+      if (err.name === 'AbortError') {
+        // Stopped by the user — keep the partial reply already streamed.
+        // The backend persisted it; it reconciles on the next message/reload.
+      } else {
+        console.error('Failed to send message', err);
+        if (activeSessionIdRef.current === streamSessionId) {
+          setMessages(prev => {
+            const msgs = [...prev];
+            msgs[msgs.length - 1] = { role: 'assistant', content: '⚠️ Failed to get a response. Please check that Ollama is running.' };
+            return msgs;
+          });
+        }
+      }
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   };
@@ -496,17 +545,17 @@ export default function ChatLayout({ setAuthToken }) {
                 onChange={(e) => handleAgentChange(e.target.value)}
               >
                 <option value="diagnostic">🤖 General Diagnostic Assistant</option>
-                <option value="deployments" disabled={!canInvokeAgents}>🚀 Code Deployment Agent{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="kb" disabled={!canInvokeAgents}>📚 RAG Knowledge Base Agent{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="performance" disabled={!canInvokeAgents}>⚡ Performance Analyzer{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="cloning" disabled={!canInvokeAgents}>🧬 EBS Cloning Agent{canInvokeAgents ? '' : ' 🔒'}</option>
-                <option value="patching" disabled={!canInvokeAgents}>🩹 EBS Patching Agent{canInvokeAgents ? '' : ' 🔒'}</option>
+                <option value="deployments" disabled={!canAgent('deployment')}>🚀 Code Deployment Agent{canAgent('deployment') ? '' : ' 🔒'}</option>
+                <option value="kb">📚 RAG Knowledge Base Agent</option>
+                <option value="performance" disabled={!canAgent('performance')}>⚡ Performance Analyzer{canAgent('performance') ? '' : ' 🔒'}</option>
+                <option value="cloning" disabled={!canAgent('cloning')}>🧬 EBS Cloning Agent{canAgent('cloning') ? '' : ' 🔒'}</option>
+                <option value="patching" disabled={!canAgent('patching')}>🩹 EBS Patching Agent{canAgent('patching') ? '' : ' 🔒'}</option>
                 <option value="finance" disabled>💸 Cash Management Agent (Soon)</option>
                 <option value="purchasing" disabled>🛒 Purchasing PO Agent (Soon)</option>
               </select>
               {!canInvokeAgents && (
-                <span className="agent-locked-note" title="Your role can use chat but cannot invoke agents.">
-                  🔒 Chat only — agents require Admin/DBA role
+                <span className="agent-locked-note" title="Your role grants no agents. Ask an administrator to assign a role.">
+                  🔒 Chat & Knowledge Base only — agents require a role grant
                 </span>
               )}
             </div>
@@ -711,13 +760,25 @@ export default function ChatLayout({ setAuthToken }) {
               placeholder={activeSession ? "Ask the AI Agent Hub anything..." : "Select or start a chat to begin..."}
               disabled={!activeSession || loading}
             />
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={!activeSession || loading || !inputMessage.trim()}
-            >
-              Send
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="btn-primary chat-stop-btn"
+                onClick={handleStop}
+                title="Stop generating"
+                aria-label="Stop generating"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={!activeSession || !inputMessage.trim()}
+              >
+                Send
+              </button>
+            )}
           </form>
         </div>
       </main>

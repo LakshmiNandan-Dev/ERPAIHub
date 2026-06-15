@@ -119,12 +119,25 @@ The AI report always follows a fixed structure: executive summary → critical i
 
 ### 4. RAG Knowledge Base
 
-A document store that feeds verified context into every chat query.
+A document store that feeds verified context into every chat query, using two-stage
+retrieval (embedding recall → cross-encoder reranking) with a live web fallback.
 
 - **Upload:** PDF, TXT, or Markdown files up to 50 MB. The API responds immediately and indexes in the background using ChromaDB + `sentence-transformers` embeddings.
-- **Retrieval:** on every substantive chat query, the nearest chunks are retrieved and prepended to the LLM prompt as `[VERIFIED REFERENCE DOCUMENTATION]`.
+- **Duplicate guard:** each upload is hashed (SHA-256 of the raw bytes); re-uploading byte-identical content — even under a different filename — is rejected with `409 Conflict` naming the existing document. A previously *failed* index can still be retried.
+- **Advanced retrieval:** a wide embedding search pulls candidate chunks (recall), then a cross-encoder reranker (`ms-marco-MiniLM-L-6-v2`) reorders them for precision; only chunks above the relevance floor are prepended to the LLM prompt as `[VERIFIED REFERENCE DOCUMENTATION]`. If the reranker can't load (e.g. air-gapped first run) retrieval falls back to embedding-distance filtering automatically.
+- **Web fallback:** when the local knowledge base has no confident match, a live **DuckDuckGo** search grounds the answer instead of returning nothing. (Disabled per-tool for the MCP knowledge-base lookup, which stays local-only.)
 - **Auto-indexing:** successful deployment step logs are automatically added as structured markdown documents so the agent can recall what commands were run against which environment.
 - **Management:** list all documents (with status: indexing / ready / failed) and delete individual records.
+
+**Retrieval tuning** (environment variables, all optional):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAG_RERANK_ENABLED` | `1` | Enable cross-encoder reranking |
+| `RAG_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Reranker model |
+| `RAG_RERANK_CANDIDATES` | `20` | Candidates pulled before reranking |
+| `RAG_RERANK_MIN_SCORE` | `0.0` | Relevance floor; below it a query is a local miss |
+| `RAG_WEB_FALLBACK_ENABLED` | `1` | Fall back to DuckDuckGo on a local miss |
 
 ---
 

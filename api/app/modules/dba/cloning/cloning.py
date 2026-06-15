@@ -14,7 +14,7 @@ from app import models
 from app.modules.dba.cloning import cloning_service
 from app.core.safety import prod_guard
 from app.core.audit import audit_service
-from app.core.auth.auth import get_current_user, require_agent_access, require_approver
+from app.core.auth.auth import get_current_user, require_agent, require_approver
 
 router = APIRouter(prefix="/cloning", tags=["Cloning Agent"])
 
@@ -188,7 +188,7 @@ class AgentRequest(BaseModel):
 @router.post("/agent")
 def clone_agent(payload: AgentRequest,
                 db: Session = Depends(database.get_db),
-                current_user: models.User = Depends(require_agent_access)):
+                current_user: models.User = Depends(require_agent("cloning"))):
     ctx = {k: str(payload.context.get(k) or "") for k in _ALL_KEYS}
     field, question = _next_field(ctx)
 
@@ -282,7 +282,7 @@ def _simulate(run, db):
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_clone(payload: CloneCreate, db: Session = Depends(database.get_db),
-                 current_user: models.User = Depends(require_agent_access)):
+                 current_user: models.User = Depends(require_agent("cloning"))):
     # Target must be a registered, non-production environment.
     env = _resolve_env(db, payload.target_environment)
     if not env:
