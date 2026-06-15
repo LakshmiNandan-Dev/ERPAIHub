@@ -944,6 +944,7 @@ function MonitoringTab() {
   const [ov, setOv] = useState(null);
   const [users, setUsers] = useState([]);
   const [qual, setQual] = useState(null);
+  const [rag, setRag] = useState(null);
   const [error, setError] = useState('');
   const [showTasks, setShowTasks] = useState(false);
 
@@ -951,13 +952,14 @@ function MonitoringTab() {
     let active = true;
     const load = async () => {
       try {
-        const [o, u, q] = await Promise.all([
+        const [o, u, q, g] = await Promise.all([
           api.get('/admin/monitoring/overview'),
           api.get('/admin/monitoring/users'),
           api.get('/admin/monitoring/quality'),
+          api.get('/admin/monitoring/rag'),
         ]);
         if (!active) return;
-        setOv(o.data); setUsers(u.data.users || []); setQual(q.data); setError('');
+        setOv(o.data); setUsers(u.data.users || []); setQual(q.data); setRag(g.data); setError('');
       } catch (e) { if (active) setError(e.response?.data?.detail || e.message); }
     };
     load();
@@ -999,6 +1001,8 @@ function MonitoringTab() {
       </div>
 
       {showTasks && <TasksModal onClose={() => setShowTasks(false)} />}
+
+      {rag && <RagPanel rag={rag} />}
 
       {qual && <QualityPanel qual={qual} />}
 
@@ -1139,6 +1143,47 @@ function TasksModal({ onClose }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function RagPanel({ rag }) {
+  const ms = (v) => (v == null ? '—' : `${fmtNum(v)} ms`);
+  const num = (v) => (v == null ? '—' : v);
+  const cards = [
+    { label: 'Retrievals', value: fmtNum(rag.queries), sub: `${fmtNum(rag.hits)} grounded · ${fmtNum(rag.misses)} abstained` },
+    { label: 'Grounded Hit Rate', value: pct(rag.hit_rate), sub: 'queries that found KB context' },
+    { label: 'Avg Relevance', value: num(rag.avg_relevance), sub: 'cross-encoder top score' },
+    { label: 'Avg Chunks / Hit', value: num(rag.avg_chunks), sub: 'context passages injected' },
+    { label: 'Cache Hit Rate', value: pct(rag.cache_hit_rate), sub: `${fmtNum(rag.cache_hits)} served from cache` },
+    { label: 'Avg Retrieval', value: ms(rag.avg_retrieval_ms), sub: 'embed + rerank time' },
+    { label: 'Grounded Answers', value: pct(rag.grounded_rate), sub: `${fmtNum(rag.grounded)} of ${fmtNum(rag.generations)} answers` },
+    { label: 'Avg Generation', value: ms(rag.avg_generation_ms), sub: 'time to full answer' },
+  ];
+  return (
+    <div>
+      <h4 style={{ margin: '1.4rem 0 0.5rem' }}>
+        RAG Retrieval &amp; Generation{' '}
+        <span className="admin-muted">· bi-encoder recall → cross-encoder rerank → grounded generation</span>
+      </h4>
+      <div className="mon-cards">
+        {cards.map(c => (
+          <div key={c.label} className="mon-card">
+            <div className="mon-card-label">{c.label}</div>
+            <div className="mon-card-value">{c.value}</div>
+            <div className="mon-card-sub">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+      {rag.web_fallbacks > 0 && (
+        <p className="admin-muted" style={{ marginTop: '0.4rem' }}>
+          ⚠️ {fmtNum(rag.web_fallbacks)} retrieval(s) used the live web fallback (unverified) instead of the local KB.
+        </p>
+      )}
+      <p className="admin-muted" style={{ marginTop: '0.4rem', fontSize: '0.72rem' }}>
+        <strong>Grounded hit rate</strong> = queries that cleared the relevance floor and injected KB context; the rest
+        make the model abstain rather than fabricate. Live counters (Redis-backed).
+      </p>
     </div>
   );
 }

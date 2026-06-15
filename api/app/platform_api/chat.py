@@ -742,6 +742,7 @@ async def stream_message(
     # 6. Stream generator — yields SSE lines
     async def event_stream():
         full_content = []
+        _gen_t0 = time.monotonic()
         telemetry.stream_open(current_user.id)
         if rag_context:
             rag_label = "📚 **RAG Knowledge Base Agent Invoked!** Searching indexed reference documentation... \n\n"
@@ -879,6 +880,14 @@ async def stream_message(
                         # other providers stream uncapped (null shows as "—").
                         token_limit=4096 if llm_provider == "anthropic" else None,
                     )
+                    # Generation metric: substantive turns only (greetings skip RAG).
+                    # grounded = answered with retrieved KB context.
+                    if not is_simple_query:
+                        background_tasks.add_task(
+                            telemetry.record_generation,
+                            grounded=bool(rag_context),
+                            latency_ms=(time.monotonic() - _gen_t0) * 1000,
+                        )
                 except Exception as save_err:
                     print(f"[Stream] Failed to save assistant message: {save_err}")
                 finally:

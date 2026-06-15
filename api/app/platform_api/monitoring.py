@@ -40,3 +40,9 @@ def users(_: models.User = Depends(get_current_admin)):
 def quality(_: models.User = Depends(get_current_admin)):
     """RAG/LLM accuracy signals: automated RLAIF audit + human feedback."""
     return telemetry.get_quality()
+
+
+@router.get("/rag")
+def rag(_: models.User = Depends(get_current_admin)):
+    """RAG retrieval (hit/miss/cache/relevance/latency) + grounded-generation metrics."""
+    return telemetry.get_rag()

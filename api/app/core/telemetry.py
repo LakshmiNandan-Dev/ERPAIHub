@@ -29,6 +29,20 @@ K_ACTIVE = "tlm:active"            # zset user_id -> last_seen epoch
 K_USER = "tlm:user:{}"            # hash per user
 K_PROVIDER = "tlm:provider:{}"    # hash per provider
 K_TOK2USER = "tlm:tok2user:{}"   # token -> "id|username" cache
+# RAG retrieval metrics (live counters)
+K_RAG_Q = "tlm:rag:queries"          # total retrieval attempts
+K_RAG_HIT = "tlm:rag:hits"           # retrievals that returned KB context
+K_RAG_CACHE = "tlm:rag:cache_hits"   # served from the retrieval cache
+K_RAG_WEB = "tlm:rag:web"            # grounded via web fallback
+K_RAG_CHUNKS = "tlm:rag:chunks_sum"  # Σ chunks returned (for avg over hits)
+K_RAG_SCORE_SUM = "tlm:rag:score_sum"  # Σ top rerank score (hits only)
+K_RAG_SCORE_CNT = "tlm:rag:score_cnt"
+K_RAG_LAT_SUM = "tlm:rag:lat_ms_sum"   # Σ retrieval latency (ms)
+K_RAG_LAT_CNT = "tlm:rag:lat_cnt"
+# RAG-grounded generation metrics (substantive chat turns only)
+K_GEN_CNT = "tlm:gen:count"
+K_GEN_GROUNDED = "tlm:gen:grounded"    # answers produced with KB context
+K_GEN_LAT_SUM = "tlm:gen:lat_ms_sum"   # Σ generation latency (ms)
 
 _redis = None
 
@@ -125,6 +139,47 @@ def record_llm(user_id, username, endpoint, provider, model,
         pass
 
 
+def record_rag(hit, cached=False, from_web=False, num_chunks=0, top_score=None, latency_ms=None):
+    """Capture one RAG retrieval for the monitoring RAG panel. ``hit`` = context
+    was returned (vs. a confident miss that makes the model abstain)."""
+    try:
+        r = _r()
+        pipe = r.pipeline()
+        pipe.incr(K_RAG_Q)
+        if hit:
+            pipe.incr(K_RAG_HIT)
+            pipe.incrby(K_RAG_CHUNKS, int(num_chunks or 0))
+            if top_score is not None:
+                pipe.incrbyfloat(K_RAG_SCORE_SUM, float(top_score))
+                pipe.incr(K_RAG_SCORE_CNT)
+        if cached:
+            pipe.incr(K_RAG_CACHE)
+        if from_web:
+            pipe.incr(K_RAG_WEB)
+        if latency_ms is not None:
+            pipe.incrbyfloat(K_RAG_LAT_SUM, float(latency_ms))
+            pipe.incr(K_RAG_LAT_CNT)
+        pipe.execute()
+    except Exception:
+        pass
+
+
+def record_generation(grounded=False, latency_ms=None):
+    """Capture one substantive (RAG-eligible) chat generation. ``grounded`` =
+    the answer was produced with retrieved KB context."""
+    try:
+        r = _r()
+        pipe = r.pipeline()
+        pipe.incr(K_GEN_CNT)
+        if grounded:
+            pipe.incr(K_GEN_GROUNDED)
+        if latency_ms is not None:
+            pipe.incrbyfloat(K_GEN_LAT_SUM, float(latency_ms))
+        pipe.execute()
+    except Exception:
+        pass
+
+
 def stream_open(user_id=None):
     try:
         _r().incr(K_STREAMS)
@@ -186,6 +241,13 @@ def _int(v):
         return int(v or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _flt(v):
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def get_active_users(window_s: int = ACTIVE_WINDOW_S):
@@ -376,6 +438,44 @@ def get_quality(recent_hours: int = 24):
             ]
         finally:
             db.close()
+    except Exception:
+        pass
+    return out
+
+
+def get_rag():
+    """RAG retrieval + grounded-generation metrics for the monitoring panel.
+
+    Retrieval: how often a query found confident KB context (hit) vs. abstained
+    (miss), cache efficiency, average relevance/chunks, retrieval latency.
+    Generation: of substantive chat turns, how many were grounded in KB context.
+    """
+    out = {
+        "queries": 0, "hits": 0, "misses": 0, "hit_rate": None,
+        "cache_hits": 0, "cache_hit_rate": None, "web_fallbacks": 0,
+        "avg_chunks": None, "avg_relevance": None, "avg_retrieval_ms": None,
+        "generations": 0, "grounded": 0, "grounded_rate": None, "avg_generation_ms": None,
+    }
+    try:
+        r = _r()
+        q, hit = _int(r.get(K_RAG_Q)), _int(r.get(K_RAG_HIT))
+        out["queries"] = q
+        out["hits"] = hit
+        out["misses"] = max(0, q - hit)
+        out["hit_rate"] = _rate(hit, q)
+        out["cache_hits"] = _int(r.get(K_RAG_CACHE))
+        out["cache_hit_rate"] = _rate(out["cache_hits"], q)
+        out["web_fallbacks"] = _int(r.get(K_RAG_WEB))
+        out["avg_chunks"] = round(_int(r.get(K_RAG_CHUNKS)) / hit, 1) if hit else None
+        sc_cnt = _int(r.get(K_RAG_SCORE_CNT))
+        out["avg_relevance"] = round(_flt(r.get(K_RAG_SCORE_SUM)) / sc_cnt, 2) if sc_cnt else None
+        lat_cnt = _int(r.get(K_RAG_LAT_CNT))
+        out["avg_retrieval_ms"] = round(_flt(r.get(K_RAG_LAT_SUM)) / lat_cnt) if lat_cnt else None
+        gen, grounded = _int(r.get(K_GEN_CNT)), _int(r.get(K_GEN_GROUNDED))
+        out["generations"] = gen
+        out["grounded"] = grounded
+        out["grounded_rate"] = _rate(grounded, gen)
+        out["avg_generation_ms"] = round(_flt(r.get(K_GEN_LAT_SUM)) / gen) if gen else None
     except Exception:
         pass
     return out

@@ -4,6 +4,7 @@ Supports PDF and TXT file ingestion, chunking, and semantic search.
 """
 import os
 import json
+import time
 import hashlib
 import chromadb
 from chromadb.config import Settings
@@ -301,6 +302,8 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
     Falls back to legacy embedding-distance filtering when the reranker can't
     load, so behaviour degrades gracefully in air-gapped environments.
     """
+    from app.core import telemetry   # lazy import avoids any import cycle
+    _t0 = time.monotonic()
     collection = _get_collection()
     have_corpus = collection.count() > 0
 
@@ -315,12 +318,16 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         try:
             hit = _r().get(cache_key)
             if hit is not None:
+                telemetry.record_rag(hit=bool(hit), cached=True,
+                                     latency_ms=(time.monotonic() - _t0) * 1000)
                 return hit
         except Exception:
             pass
 
     result_str = ""
     from_web = False
+    top_score = None
+    relevant = []
 
     if have_corpus:
         # Stage 1 — recall: pull a wide candidate set when reranking, else just N.
@@ -334,10 +341,10 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         distances = results.get("distances", [[]])[0]
 
         # Stage 2 — precision: cross-encoder rerank, keep those above the floor.
-        relevant = []
         if RAG_RERANK_ENABLED:
             ranked = _rerank(query_text, docs)
             if ranked:
+                top_score = ranked[0][1]   # best candidate's cross-encoder score
                 relevant = [doc for doc, score in ranked[:n_results]
                             if score >= RAG_RERANK_MIN_SCORE]
         if not relevant and not (RAG_RERANK_ENABLED and _get_reranker() is not None):
@@ -361,6 +368,12 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         except Exception:
             pass
 
+    telemetry.record_rag(
+        hit=bool(result_str), cached=False, from_web=from_web,
+        num_chunks=len(relevant),
+        top_score=(top_score if (result_str and not from_web) else None),
+        latency_ms=(time.monotonic() - _t0) * 1000,
+    )
     return result_str
 
 
