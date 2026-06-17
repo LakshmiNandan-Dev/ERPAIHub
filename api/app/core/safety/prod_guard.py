@@ -47,7 +47,10 @@ def probe_target(env) -> dict:
     try:
         import oracledb
         dsn = oracledb.makedsn(env.db_host, env.db_port or 1521, sid=env.db_sid)
-        conn = oracledb.connect(user=env.db_user, password=crypto.decrypt(env.db_password_enc), dsn=dsn)
+        # Bound the connect so an unreachable DB host fails fast instead of hanging
+        # the request (and the UI's "Testing…") for python-oracledb's long default.
+        conn = oracledb.connect(user=env.db_user, password=crypto.decrypt(env.db_password_enc),
+                                dsn=dsn, tcp_connect_timeout=8)
         out["reachable"] = True
         cur = conn.cursor()
         for key, sql in _PROBE_SQL.items():

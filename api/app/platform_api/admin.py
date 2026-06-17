@@ -420,18 +420,45 @@ def test_server(server_id: int,
     s = db.query(models.SshServer).filter(models.SshServer.id == server_id).first()
     if not s:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
+
+    import socket
+    host, port = s.hostname, s.port or 22
+
+    # 1. TCP reachability first — distinguishes "can't reach the host" (firewall /
+    #    VPN / wrong host / not routable from this API host) from an SSH/auth issue.
+    try:
+        socket.create_connection((host, port), timeout=8).close()
+    except socket.timeout:
+        return {"ok": False, "message": (
+            f"TCP connection to {host}:{port} timed out — the host didn't respond. "
+            "The port is likely blocked by a firewall, or the host isn't routable from "
+            "the server running this app (e.g. it's on a VPN/private network the API host "
+            "can't reach). Verify the host/port and that this app's host can reach it.")}
+    except OSError as exc:
+        return {"ok": False, "message": (
+            f"Cannot reach {host}:{port} — {exc.strerror or exc}. "
+            "Check the hostname/port and that SSH is listening and reachable from this app's host.")}
+
+    # 2. TCP is open — now the SSH handshake + auth.
     try:
         import paramiko
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
-            hostname=s.hostname, port=s.port or 22, username=s.username,
-            password=crypto.decrypt(s.password_enc), timeout=10,
+            hostname=host, port=port, username=s.username,
+            password=crypto.decrypt(s.password_enc),
+            timeout=10, banner_timeout=10, auth_timeout=10,
         )
         client.close()
-        return {"ok": True, "message": f"Connected to {s.hostname}:{s.port} successfully."}
+        return {"ok": True, "message": f"Connected to {host}:{port} successfully."}
+    except paramiko.AuthenticationException:
+        return {"ok": False, "message": (
+            f"Reached {host}:{port}, but authentication failed for user '{s.username}'. "
+            "Check the username and password.")}
+    except paramiko.SSHException as exc:
+        return {"ok": False, "message": f"Reached {host}:{port}, but the SSH handshake failed: {exc}"}
     except Exception as exc:
-        return {"ok": False, "message": f"Connection failed: {exc}"}
+        return {"ok": False, "message": f"SSH connection to {host}:{port} failed: {exc}"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
