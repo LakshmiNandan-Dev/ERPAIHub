@@ -5,7 +5,7 @@ import json
 import asyncio
 import time
 import re as _re
-from app.core import database, config_service, telemetry
+from app.core import database, config_service, telemetry, prompts
 from app import schemas, models
 from app.ml import rlaif_service
 from app.core.rag import rag_service
@@ -179,33 +179,15 @@ async def _maybe_compress_session(
 
 
 def _ground(rag_context: str, question: str) -> str:
-    """Wrap a user question with the retrieved knowledge-base context and a strict
-    grounding instruction: prefer the context, cite it, and abstain rather than
-    fabricate when it doesn't cover the question."""
-    return (
-        "[KNOWLEDGE BASE]\n"
-        f"{rag_context}\n"
-        "[END KNOWLEDGE BASE]\n\n"
-        "Answer the QUESTION using the knowledge base above as the authoritative source, and cite the source "
-        "for the specifics you use. If the knowledge base does not contain the answer, say it isn't in the "
-        "knowledge base and give only the general guidance you are confident about — do not invent table names, "
-        "profile options, API signatures, patch numbers, or file paths to fill the gap.\n\n"
-        f"QUESTION: {question}"
-    )
+    """Wrap a question with retrieved KB context + a strict grounding instruction.
+    The prompt body is admin-editable (prompts.knowledge_base.grounding)."""
+    return prompts.get_prompt("knowledge_base.grounding", rag_context=rag_context, question=question)
 
 
 def _no_context(question: str) -> str:
-    """Wrap a substantive question for which retrieval found no confident
-    knowledge-base match. Tells the model not to fabricate specifics — the main
-    failure mode of small local models on niche EBS questions."""
-    return (
-        "No knowledge-base entry was found for this question. Answer only from well-established, standard "
-        "Oracle EBS knowledge. Do NOT invent or guess specific command syntax, parameter names, file paths, "
-        "table/column names, profile options, or patch numbers. If you are not certain of the exact command, "
-        "say so and tell the user to verify against the official Oracle documentation rather than giving an "
-        "unverified command.\n\n"
-        f"QUESTION: {question}"
-    )
+    """Wrap a substantive question that retrieved no confident KB match with an
+    anti-fabrication instruction (admin-editable: knowledge_base.no_context)."""
+    return prompts.get_prompt("knowledge_base.no_context", question=question)
 
 
 def _build_ollama_messages(messages, message_content: str, rag_context: str,
@@ -232,21 +214,7 @@ def _build_ollama_messages(messages, message_content: str, rag_context: str,
     if len(messages) > _MAX_HISTORY_MESSAGES:
         messages = messages[-_MAX_HISTORY_MESSAGES:]
 
-    system_content = (
-        "You are an expert Oracle E-Business Suite (EBS) developer assistant. "
-        "Help developers with PL/SQL package compilation, SQL script execution, ADOP patching, FNDLOAD data uploads, "
-        "Forms compilation, Workflow uploads, OAF page imports, SSH-based deployments, and general EBS configuration tasks. "
-        "Provide complete, accurate command examples and scripts tailored to Oracle EBS 12.x environments. "
-        "When a question is ambiguous, ask for clarification rather than guessing.\n\n"
-        "GROUNDING RULES — follow these strictly:\n"
-        "- When a message includes a [KNOWLEDGE BASE] block, treat it as the authoritative source and base your "
-        "answer on it. Cite the source filename for facts you draw from it.\n"
-        "- Do NOT invent table names, column names, profile options, API/package signatures, patch numbers, or file "
-        "paths. If a specific detail is not in the knowledge base or established Oracle EBS fundamentals, say so plainly.\n"
-        "- If the knowledge base does not contain the answer, reply that it isn't in the knowledge base and give only "
-        "the general guidance you are confident about — do not fabricate specifics to fill the gap.\n"
-        "- Prefer saying \"I'm not certain\" over presenting a guess as fact."
-    )
+    system_content = prompts.get_prompt("chat.system")
     system_prompt = {"role": "system", "content": system_content}
 
     ollama_msgs = []

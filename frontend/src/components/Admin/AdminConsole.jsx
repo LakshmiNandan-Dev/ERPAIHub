@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
@@ -9,6 +9,7 @@ const TABS = [
   { key: 'monitoring',   label: 'Monitoring',    icon: Activity,      roles: ['admin'] },
   { key: 'users',        label: 'Users',         icon: Users,         roles: ['admin', 'dba'] },
   { key: 'roles',        label: 'Roles',         icon: KeyRound,      roles: ['admin'] },
+  { key: 'prompts',      label: 'Agent Prompts', icon: MessageSquare, roles: ['admin'] },
   { key: 'servers',      label: 'SSH Servers',   icon: Server,        roles: ['admin'] },
   { key: 'environments', label: 'Environments',  icon: Globe,         roles: ['admin'] },
   { key: 'llm',          label: 'LLM Providers', icon: Cpu,           roles: ['admin'] },
@@ -51,6 +52,7 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
           {tab === 'monitoring' && <MonitoringTab />}
           {tab === 'users' && <UsersTab />}
           {tab === 'roles' && <RolesTab />}
+          {tab === 'prompts' && <PromptsTab />}
           {tab === 'servers' && <ServersTab />}
           {tab === 'environments' && <EnvironmentsTab />}
           {tab === 'llm' && <LlmTab />}
@@ -335,6 +337,122 @@ function RolesTab() {
           </Field>
         </FormModal>
       )}
+    </div>
+  );
+}
+
+/* ── Agent Prompts (editable instruction overrides) ─────────────────────────── */
+
+function PromptsTab() {
+  const { rows, error, loading, reload, setError } = useResource('/admin/prompts');
+  const [selected, setSelected] = useState(null);
+
+  // Distinct agents, in registry order.
+  const agents = [];
+  rows.forEach(p => { if (!agents.includes(p.agent)) agents.push(p.agent); });
+  const active = selected && agents.includes(selected) ? selected : agents[0];
+  const list = rows.filter(p => p.agent === active);
+
+  const label = (a) => a.replace(/_/g, ' ');
+  const overridden = (a) => rows.filter(p => p.agent === a && p.is_overridden).length;
+  const total = (a) => rows.filter(p => p.agent === a).length;
+
+  const navBtn = (a) => ({
+    textAlign: 'left', padding: '0.5rem 0.7rem', borderRadius: 7, cursor: 'pointer',
+    textTransform: 'capitalize', fontSize: '0.85rem',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+    border: '1px solid ' + (a === active ? 'var(--accent-primary)' : '#E5E2D8'),
+    background: a === active ? '#FFFFFF' : 'transparent',
+    color: a === active ? 'var(--accent-primary)' : 'inherit',
+    fontWeight: a === active ? 600 : 400,
+  });
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Agent Prompts {loading && <span className="admin-muted">· loading…</span>}</h4>
+      </div>
+      {error && <p className="admin-error">{error}</p>}
+      <p className="admin-muted">
+        Select an agent to view and edit its prompt(s). Keep any <code>{'{placeholder}'}</code> tokens
+        shown — they're filled in at runtime. <strong>Reset</strong> restores the built-in default. The Cloning and
+        Patching agents are deterministic flows with no editable prompt.
+      </p>
+
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+        {/* Agent selector */}
+        <div style={{ flex: '0 0 200px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {agents.map(a => (
+            <button key={a} style={navBtn(a)} onClick={() => setSelected(a)}>
+              <span>{label(a)}</span>
+              {overridden(a) > 0
+                ? <span className="admin-pill admin" title={`${overridden(a)} overridden`}>{overridden(a)}★</span>
+                : <span className="admin-muted" style={{ fontSize: '0.7rem' }}>{total(a)}</span>}
+            </button>
+          ))}
+          {agents.length === 0 && !loading && <span className="admin-muted">No editable prompts.</span>}
+        </div>
+
+        {/* Prompts for the selected agent */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {list.map(p => <PromptCard key={p.key} p={p} reload={reload} setError={setError} />)}
+          {active && list.length === 0 && <p className="admin-muted">No prompts for this agent.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptCard({ p, reload, setError }) {
+  const [text, setText] = useState(p.content);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const dirty = text !== p.content;
+
+  const save = async () => {
+    setBusy(true); setMsg(''); setError('');
+    try { await api.put(`/admin/prompts/${p.key}`, { content: text }); setMsg('Saved ✓'); reload(); }
+    catch (e) { setMsg(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    if (!window.confirm(`Reset "${p.label}" to the built-in default?`)) return;
+    setBusy(true); setMsg(''); setError('');
+    try { const r = await api.delete(`/admin/prompts/${p.key}`); setText(r.data.content); setMsg('Reset to default ✓'); reload(); }
+    catch (e) { setMsg(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+
+  const rows = Math.min(22, Math.max(6, text.split('\n').length + 1));
+
+  return (
+    <div style={{ border: '1px solid rgba(0,0,0,0.12)', borderRadius: 8, padding: '0.7rem', marginBottom: '0.7rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <strong>{p.label}</strong>
+        {p.is_overridden
+          ? <span className="admin-pill admin">overridden</span>
+          : <span className="admin-pill ok">default</span>}
+      </div>
+      {p.description && <p className="admin-muted" style={{ fontSize: '0.72rem', margin: '0.2rem 0 0.3rem' }}>{p.description}</p>}
+      {p.placeholders.length > 0 && (
+        <p className="admin-muted" style={{ fontSize: '0.72rem', margin: '0 0 0.3rem' }}>
+          Required placeholders:{' '}
+          {p.placeholders.map(ph => <code key={ph} style={{ marginRight: 6 }}>{`{${ph}}`}</code>)}
+        </p>
+      )}
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        rows={rows}
+        spellCheck={false}
+        style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.78rem', resize: 'vertical' }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: '0.4rem' }}>
+        <button className="admin-btn-primary" disabled={!dirty || busy} onClick={save}>Save</button>
+        <button className="admin-btn-ghost" disabled={!p.is_overridden || busy} onClick={reset}>Reset to default</button>
+        {msg && <span className="admin-muted">{msg}</span>}
+      </div>
     </div>
   );
 }

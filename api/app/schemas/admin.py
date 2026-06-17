@@ -4,6 +4,25 @@ from datetime import datetime
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Admin — agent prompts (editable instruction overrides)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PromptUpdate(BaseModel):
+    content: str
+
+
+class PromptOut(BaseModel):
+    key: str
+    agent: str
+    label: str
+    description: Optional[str] = None
+    placeholders: List[str] = []
+    default: str
+    content: str            # current effective text (override or default)
+    is_overridden: bool = False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Admin — roles & agent permissions (RBAC)
 # ══════════════════════════════════════════════════════════════════════════════
 

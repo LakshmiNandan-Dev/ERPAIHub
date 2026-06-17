@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from app.core import database, crypto
+from app.core import database, crypto, prompts
 from app import schemas, models
 from app.common import utils
 from app.core.llm import llm_service, llm_guard_service, model_router
@@ -299,6 +299,56 @@ def delete_role(role_id: int,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
     db.delete(role)   # association rows in user_roles / role_agents are cleared too
     db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Agent prompts (editable instruction overrides)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/prompts", response_model=List[schemas.PromptOut])
+def list_prompts(db: Session = Depends(database.get_db),
+                 _: models.User = Depends(get_current_admin)):
+    """All editable agent prompts with their default + current (override) content."""
+    overrides = {r.prompt_key: r.content for r in db.query(models.AgentPrompt).all()}
+    return [prompts.build_out(d["key"], overrides.get(d["key"])) for d in prompts.all_definitions()]
+
+
+@router.put("/prompts/{prompt_key}", response_model=schemas.PromptOut)
+def update_prompt(prompt_key: str, payload: schemas.PromptUpdate,
+                  db: Session = Depends(database.get_db),
+                  admin: models.User = Depends(get_current_admin)):
+    """Override a prompt. Rejects unknown keys and edits that drop a required placeholder."""
+    if prompts.definition(prompt_key) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown prompt key")
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt content cannot be empty")
+    missing = prompts.missing_placeholders(prompt_key, content)
+    if missing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Prompt must keep these placeholders: {', '.join('{'+m+'}' for m in missing)}")
+    row = db.query(models.AgentPrompt).filter(models.AgentPrompt.prompt_key == prompt_key).first()
+    if row:
+        row.content = content
+        row.updated_by = admin.id
+    else:
+        db.add(models.AgentPrompt(prompt_key=prompt_key, content=content, updated_by=admin.id))
+    db.commit()
+    return prompts.build_out(prompt_key, content)
+
+
+@router.delete("/prompts/{prompt_key}", response_model=schemas.PromptOut)
+def reset_prompt(prompt_key: str,
+                 db: Session = Depends(database.get_db),
+                 _: models.User = Depends(get_current_admin)):
+    """Reset a prompt to its built-in default (delete the override row)."""
+    if prompts.definition(prompt_key) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown prompt key")
+    row = db.query(models.AgentPrompt).filter(models.AgentPrompt.prompt_key == prompt_key).first()
+    if row:
+        db.delete(row)
+        db.commit()
+    return prompts.build_out(prompt_key, None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
