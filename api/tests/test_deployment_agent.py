@@ -8,7 +8,9 @@ _AGENT_URL = "/deployments/agent/chat"
 
 
 def _chat(client, headers, context, user_message=""):
-    payload = {"context": context, "message": user_message}
+    # The agent endpoint expects AgentChatRequest: user_message + context (+ optional
+    # history / available_servers / available_environments).
+    payload = {"user_message": user_message, "context": context}
     return client.post(_AGENT_URL, json=payload, headers=headers)
 
 
@@ -16,7 +18,7 @@ class TestDeploymentAgentReact:
 
     def test_agent_requires_auth(self, client):
         """TC-DA-01: Agent chat endpoint rejects unauthenticated requests."""
-        r = client.post(_AGENT_URL, json={"context": {}, "message": "hi"})
+        r = client.post(_AGENT_URL, json={"context": {}, "user_message": "hi"})
         assert r.status_code == 401
 
     def test_agent_requires_agent_access(self, client, admin_headers):
@@ -45,7 +47,7 @@ class TestDeploymentAgentReact:
         """TC-DA-05: Agent presents a plan and then proceeds on user confirmation."""
         context_with_all = {
             "environment": nonprod_env["name"],
-            "server": ssh_server["name"],
+            "server_name": ssh_server["name"],
             "source_type": "local",
             "instructions": "Deploy XXCUST_PKG.pls to UAT using sqlplus.",
         }
@@ -63,17 +65,16 @@ class TestDeploymentAgentReact:
 
     def test_agent_stuck_loop_detection(self, client, admin_headers, monkeypatch):
         """TC-DA-07: Agent exits gracefully when it loops on the same action twice."""
-        from app.core.llm import llm_service
+        from app.modules.dba.deployment import deployment_agent
 
-        call_count = {"n": 0}
+        # The ReAct loop reasons via deployment_agent._llm (a single-string
+        # completion), not the streaming chat path — mock that.
+        async def _llm_stuck(messages, provider, model, api_key, base_url):
+            return ('Thought: I need to ask the user.\n'
+                    'Action: request_user_input\n'
+                    'Action Input: {"field":"instructions","question":"What to deploy?"}')
 
-        async def _stream_stuck(*args, **kwargs):
-            call_count["n"] += 1
-            yield "Thought: I need to ask the user.\n"
-            yield "Action: request_user_input\n"
-            yield 'Action Input: {"field":"instructions","question":"What to deploy?"}\n'
-
-        monkeypatch.setattr(llm_service, "stream_tokens", _stream_stuck)
+        monkeypatch.setattr(deployment_agent, "_llm", _llm_stuck)
 
         r = _chat(client, admin_headers, {})
         # Should not hang or 500 — stuck-loop detection kicks in
@@ -81,21 +82,21 @@ class TestDeploymentAgentReact:
 
     def test_agent_finish_tool_ends_session(self, client, admin_headers, monkeypatch):
         """TC-DA-08: Agent returns final message when 'finish' tool is invoked."""
-        from app.core.llm import llm_service
+        from app.modules.dba.deployment import deployment_agent
 
-        async def _stream_finish(*args, **kwargs):
-            yield "Thought: Deployment is complete.\n"
-            yield "Action: finish\n"
-            yield "Action Input: Deployment to UAT completed successfully.\n"
+        async def _llm_finish(messages, provider, model, api_key, base_url):
+            return ('Thought: Deployment is complete.\n'
+                    'Action: finish\n'
+                    'Action Input: Deployment to UAT completed successfully.')
 
-        monkeypatch.setattr(llm_service, "stream_tokens", _stream_finish)
+        monkeypatch.setattr(deployment_agent, "_llm", _llm_finish)
 
         r = _chat(client, admin_headers, {
             "environment": "UAT",
-            "server": "srv-01",
+            "server_name": "srv-01",
             "source_type": "local",
             "instructions": "Deploy XXCUST_PKG.",
-            "confirmation": "yes",
+            "confirmed": True,
         })
         assert r.status_code == 200
 
@@ -115,14 +116,14 @@ class TestDeploymentAgentReact:
 
     def test_agent_confluence_fetch_graceful_failure(self, client, admin_headers, monkeypatch):
         """TC-DA-07 (confluence): Confluence fetch failure doesn't crash the agent."""
-        from app.core.llm import llm_service
+        from app.modules.dba.deployment import deployment_agent
 
-        async def _stream_confluence(*args, **kwargs):
-            yield "Thought: The user gave a Confluence URL. I'll fetch it.\n"
-            yield "Action: fetch_confluence_page\n"
-            yield '{"url":"https://wiki.invalid/pages/123","token":"fake-token"}\n'
+        async def _llm_confluence(messages, provider, model, api_key, base_url):
+            return ("Thought: The user gave a Confluence URL. I'll fetch it.\n"
+                    "Action: fetch_confluence_page\n"
+                    'Action Input: {"url":"https://wiki.invalid/pages/123","token":"fake-token"}')
 
-        monkeypatch.setattr(llm_service, "stream_tokens", _stream_confluence)
+        monkeypatch.setattr(deployment_agent, "_llm", _llm_confluence)
 
         r = _chat(client, admin_headers, {
             "confluence_url": "https://wiki.invalid/pages/123",

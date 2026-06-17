@@ -15,13 +15,23 @@ def _patch_payload(target_env_name, components="db_home", patch_number="37123456
 
 class TestPatchingInterview:
 
-    def test_interview_asks_for_environment(self, client, admin_headers):
-        """TC-PT-01: Interview starts by asking which environment to patch."""
+    def test_interview_asks_for_environment(self, client, admin_headers, nonprod_env):
+        """TC-PT-01: Interview starts by asking which environment to patch.
+
+        At least one environment must be registered — with none, the agent returns
+        a type='error' prompting the admin to add one first (see
+        test_interview_no_environments_registered)."""
         r = client.post("/patching/agent", json={"context": {}}, headers=admin_headers)
         assert r.status_code == 200
         data = r.json()
         assert data["type"] == "question"
         assert data.get("field") == "target_environment"
+
+    def test_interview_no_environments_registered(self, client, admin_headers):
+        """TC-PT-01 (empty): With no environments registered the agent returns an error."""
+        r = client.post("/patching/agent", json={"context": {}}, headers=admin_headers)
+        assert r.status_code == 200
+        assert r.json()["type"] == "error"
 
     def test_interview_lists_all_envs_including_prod(self, client, admin_headers, prod_env, nonprod_env):
         """TC-PT-02: Patching interview lists ALL environments (prod and non-prod)."""
@@ -316,7 +326,8 @@ class TestPatchingInteractiveAdop:
         # Abort the cycle
         r = client.post(f"/patching/{run_id}/phase", json={"phase": "abort"}, headers=admin_headers)
         assert r.status_code == 200
-        assert r.json()["status"]["status"] in ("aborted", "in_cycle")
+        # The enriched cycle state reports abort via the `aborted` flag.
+        assert r.json()["status"]["aborted"] is True
 
         # Further phases should be blocked
         r2 = client.post(f"/patching/{run_id}/phase", json={"phase": "apply"}, headers=admin_headers)

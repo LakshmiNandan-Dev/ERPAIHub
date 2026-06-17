@@ -20,7 +20,9 @@ class TestRegistration:
         assert r.status_code == 201
         data = r.json()
         assert data["username"] == f"user_{uid}"
-        assert data["approval_status"] == "pending"   # non-first users start pending
+        # UserOut doesn't surface approval_status; a non-first self sign-up is created
+        # inactive+pending, so is_active=False is the public-facing proof of that.
+        assert data["is_active"] is False            # non-first users start pending/inactive
         assert "password_hash" not in data
 
     def test_duplicate_email_rejected(self, client):
@@ -114,6 +116,9 @@ class TestSessionExpiry:
 
     def test_logout_invalidates_token(self, client, admin_headers):
         """TC-AU-07: After logout, the session token is rejected."""
-        client.post("/auth/logout", headers=admin_headers)
+        # Logout takes the session_token in the body (embedded), not just the header.
+        token = admin_headers["Authorization"].split()[1]
+        lo = client.post("/auth/logout", json={"session_token": token}, headers=admin_headers)
+        assert lo.status_code == 204
         r = client.get("/chat/sessions", headers=admin_headers)
         assert r.status_code == 401
