@@ -76,7 +76,10 @@ class TestChatStreaming:
 
     def test_session_auto_title_on_first_message(self, client, admin_headers, mock_llm, mock_rag):
         """TC-CH-03: Session title updated to first 50 chars of the first message."""
-        session_id = chat_session(client, admin_headers)
+        # Auto-title only fires for an untitled/default session; create one with the
+        # default "New Conversation" title rather than the helper's fixed title.
+        session_id = client.post("/chat/sessions", json={"title": "New Conversation"},
+                                 headers=admin_headers).json()["id"]
         msg = "How do I deploy a PL/SQL package to Oracle EBS?"
         client.post(
             f"/chat/sessions/{session_id}/stream",
@@ -111,9 +114,11 @@ class TestChatStreaming:
             headers={**admin_headers, "X-LLM-Provider": "ollama"},
         )
         assert r.status_code == 200
-        body = r.text
+        # The reply streams one word per SSE 'data:' line, so reassemble the token
+        # payloads before checking — the words aren't contiguous in the raw body.
+        content = "".join(e for e in parse_sse(r.text) if isinstance(e, str)).lower()
         # Interview mode: asks for missing parameters
-        assert "deployment agent interview" in body.lower() or "target ebs environment" in body.lower()
+        assert "deployment agent interview" in content or "target ebs environment" in content
 
     def test_deploy_intent_with_full_params(self, client, admin_headers, mock_llm, mock_rag):
         """TC-CH-06: Deploy with file + env triggers deployment run creation."""

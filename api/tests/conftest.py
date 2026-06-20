@@ -36,6 +36,32 @@ test_engine = create_engine(TEST_DB_URL)
 TestSessionFactory = sessionmaker(bind=test_engine)
 
 
+class _SharedSession:
+    """Proxy that makes ``database.SessionLocal()`` hand back the test's single
+    request session instead of opening a new connection. App code that manages its
+    own session (the chat streaming save, the RLAIF audit, semantic cache, prompt
+    overrides) then reads/writes inside the SAME savepoint-isolated transaction as
+    the request — so it sees the request's still-uncommitted rows (no FK errors)
+    and its writes are rolled back with the test. ``close()`` is a no-op so those
+    callers' ``finally: db.close()`` can't drop the shared session; using ONE
+    session keeps a single savepoint (no competing-savepoint corruption)."""
+
+    def __init__(self, session):
+        self._s = session
+
+    def __getattr__(self, name):
+        return getattr(self._s, name)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self._s
+
+    def __exit__(self, *exc):
+        return False
+
+
 # ── Session-scoped: drop/create tables + seed once per test run ───────────────
 
 @pytest.fixture(scope="session", autouse=True)
@@ -77,8 +103,18 @@ def setup_test_database():
 # ── Function-scoped: transactional rollback for test isolation ────────────────
 
 @pytest.fixture
-def db_session():
-    """Each test gets an isolated DB session — all writes are rolled back after."""
+def db_session(monkeypatch):
+    """Each test gets an isolated DB session — all writes are rolled back after.
+
+    The session uses the classic begin_nested + restart-savepoint pattern. We also
+    point the app's ``database.SessionLocal`` at this same session (via
+    _SharedSession), so code that opens its OWN session — the chat streaming save,
+    the RLAIF audit, semantic cache, prompt-override lookups — runs inside this
+    test's transaction and can see rows the request session has written but not yet
+    committed (otherwise a fresh SessionLocal connection can't see them and FK
+    inserts like the assistant-message save fail)."""
+    import app.core.database as database
+
     connection = test_engine.connect()
     outer_tx = connection.begin()
     session = Session(bind=connection)
@@ -88,6 +124,8 @@ def db_session():
     def restart_savepoint(sess, tx):
         if tx.nested and not tx._parent.nested:
             sess.begin_nested()
+
+    monkeypatch.setattr(database, "SessionLocal", lambda: _SharedSession(session))
 
     yield session
 
@@ -196,14 +234,24 @@ def ssh_server(client, admin_headers):
 
 @pytest.fixture
 def mock_llm(monkeypatch):
-    """Mock LLM streaming and sync completion — no Ollama required."""
+    """Mock LLM streaming and sync completion — no Ollama required.
+
+    Signatures accept **kwargs so the mocks stay compatible as the real service
+    grows optional parameters (e.g. usage / max_tokens / temperature on
+    stream_tokens; max_tokens / temperature / use_cache on complete_sync). When a
+    mutable ``usage`` dict is passed it is populated, mirroring the real service."""
     from app.core.llm import llm_service
 
-    async def _stream(messages, provider="ollama", model=None, api_key=None, base_url=None):
+    async def _stream(messages, provider="ollama", model=None, api_key=None,
+                      base_url=None, usage=None, **kwargs):
+        if usage is not None:
+            usage["prompt_tokens"] = 10
+            usage["completion_tokens"] = 12
         yield "Oracle EBS mock response. "
         yield "Deployment uses sqlplus apps/apps @script.sql."
 
-    def _complete(messages, provider="ollama", model=None, api_key=None, base_url=None):
+    def _complete(messages, provider="ollama", model=None, api_key=None,
+                  base_url=None, **kwargs):
         return '{"score": 1, "reasoning": "Response is accurate.", "suggested_correction": ""}'
 
     monkeypatch.setattr(llm_service, "stream_tokens", _stream)
@@ -212,9 +260,12 @@ def mock_llm(monkeypatch):
 
 @pytest.fixture
 def mock_rag(monkeypatch):
-    """Mock RAG service — returns empty context by default."""
+    """Mock RAG service — returns empty context by default. The query_rag mock
+    accepts the same optional kwargs as the real service (n_results,
+    allow_web_fallback) plus **kwargs for forward-compatibility."""
     from app.core.rag import rag_service
-    monkeypatch.setattr(rag_service, "query_rag", lambda q, n_results=4: "")
+    monkeypatch.setattr(rag_service, "query_rag",
+                        lambda q, n_results=4, allow_web_fallback=True, **kw: "")
     monkeypatch.setattr(rag_service, "index_document", lambda *a, **kw: 5)
     monkeypatch.setattr(rag_service, "delete_document_chunks", lambda doc_id: None)
 

@@ -164,6 +164,59 @@ def record_rag(hit, cached=False, from_web=False, num_chunks=0, top_score=None, 
         pass
 
 
+def record_interaction(*, user_id=None, username=None, session_id=None,
+                       message_id=None, query="", response=None, rag_context=None,
+                       rag_chunks=0, grounded=False, provider=None, model=None,
+                       prompt_key=None, prompt_tokens=0, completion_tokens=0,
+                       latency_ms=None):
+    """Append one durable interaction-audit row capturing the full request: the
+    query, retrieved RAG context, prompt + model version, response, latency and
+    token usage. Best-effort — never raises, so it can't break a chat turn."""
+    try:
+        version = None
+        if prompt_key:
+            try:
+                from app.core import prompts  # lazy: avoid import cycle at load
+                version = prompts.prompt_version(prompt_key)
+            except Exception:
+                version = None
+        pt, ct = int(prompt_tokens or 0), int(completion_tokens or 0)
+        db = database.SessionLocal()
+        try:
+            db.add(models.InteractionLog(
+                user_id=user_id, username=username, session_id=session_id,
+                message_id=message_id, query=query or "", response=response,
+                rag_context=(rag_context or None), rag_chunks=int(rag_chunks or 0),
+                grounded=bool(grounded), provider=provider, model=model,
+                prompt_key=prompt_key, prompt_version=version,
+                prompt_tokens=pt, completion_tokens=ct, total_tokens=pt + ct,
+                latency_ms=int(latency_ms) if latency_ms is not None else None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
+def update_interaction_feedback(message_id, rating):
+    """Denormalize a thumbs up/down onto the interaction-audit row for a message,
+    so the audit trail stays self-contained. Best-effort."""
+    if not message_id:
+        return
+    try:
+        db = database.SessionLocal()
+        try:
+            db.query(models.InteractionLog).filter(
+                models.InteractionLog.message_id == message_id
+            ).update({"feedback_rating": rating})
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
 def record_generation(grounded=False, latency_ms=None):
     """Capture one substantive (RAG-eligible) chat generation. ``grounded`` =
     the answer was produced with retrieved KB context."""
@@ -479,3 +532,80 @@ def get_rag():
     except Exception:
         pass
     return out
+
+
+# ── Interaction audit trail (full per-turn log) ─────────────────────────────────
+
+def _interaction_row(r, truncate=True):
+    """Serialize an InteractionLog row. ``truncate`` clips long text for the list
+    view; the detail view passes False to return the full query/response/context."""
+    def clip(s, n):
+        s = s or ""
+        return (s[:n] + "…") if (truncate and len(s) > n) else s
+    return {
+        "id": r.id,
+        "created_at": r.created_at.timestamp() if r.created_at else 0,
+        "session_id": r.session_id,
+        "message_id": r.message_id,
+        "username": r.username or (f"user{r.user_id}" if r.user_id else "—"),
+        "query": clip(r.query, 160),
+        "response": clip(r.response, 200),
+        "rag_context": (None if truncate else r.rag_context),
+        "rag_chunks": _int(r.rag_chunks),
+        "grounded": bool(r.grounded),
+        "provider": r.provider or "—",
+        "model": r.model or "—",
+        "prompt_key": r.prompt_key,
+        "prompt_version": r.prompt_version,
+        "prompt_tokens": _int(r.prompt_tokens),
+        "completion_tokens": _int(r.completion_tokens),
+        "total_tokens": _int(r.total_tokens),
+        "latency_ms": r.latency_ms,
+        "feedback_rating": r.feedback_rating,
+    }
+
+
+def get_interactions(limit=50, offset=0, date_from=None, date_to=None,
+                     username=None, grounded=None, rating=None):
+    """Paginated, filterable interaction audit trail (most recent first)."""
+    limit = max(1, min(int(limit or 50), 200))
+    offset = max(0, int(offset or 0))
+    out = {"interactions": [], "total": 0, "limit": limit, "offset": offset}
+    try:
+        db = database.SessionLocal()
+        try:
+            I = models.InteractionLog
+            base = db.query(I)
+            if date_from is not None:
+                base = base.filter(I.created_at >= date_from)
+            if date_to is not None:
+                base = base.filter(I.created_at <= date_to)
+            if username:
+                base = base.filter(I.username.ilike(f"%{username}%"))
+            if grounded is not None:
+                base = base.filter(I.grounded == bool(grounded))
+            if rating is not None:
+                base = base.filter(I.feedback_rating == int(rating))
+            out["total"] = _int(base.with_entities(func.count(I.id)).scalar())
+            rows = base.order_by(I.created_at.desc()).offset(offset).limit(limit).all()
+            out["interactions"] = [_interaction_row(r, truncate=True) for r in rows]
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return out
+
+
+def get_interaction(interaction_id):
+    """Full detail for a single interaction (untruncated), or None if missing."""
+    try:
+        db = database.SessionLocal()
+        try:
+            r = db.query(models.InteractionLog).filter(
+                models.InteractionLog.id == interaction_id
+            ).first()
+            return _interaction_row(r, truncate=False) if r else None
+        finally:
+            db.close()
+    except Exception:
+        return None

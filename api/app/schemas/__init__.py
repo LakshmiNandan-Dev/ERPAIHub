@@ -46,6 +46,8 @@ from app.schemas.admin import (
     RoleDetailOut,
     RoleCreate,
     RoleUpdate,
+    PromptOut,
+    PromptUpdate,
 )
 from app.schemas.infra import (
     SshServerBase,
@@ -101,6 +103,7 @@ __all__ = [
     # admin
     "AdminUserCreate", "AdminUserUpdate", "AdminUserOut",
     "RoleBrief", "AgentBrief", "RoleDetailOut", "RoleCreate", "RoleUpdate",
+    "PromptOut", "PromptUpdate",
     # infra (ssh + environments)
     "SshServerBase", "SshServerCreate", "SshServerUpdate", "SshServerOut",
     "EnvironmentBase", "EnvironmentCreate", "EnvironmentUpdate", "EnvironmentOut",

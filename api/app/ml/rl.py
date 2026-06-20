@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import json
-from app.core import database
+from app.core import database, telemetry
 from app import schemas, models
 from app.ml import training_service
 from app.core.auth.auth import get_current_user
@@ -44,6 +44,11 @@ def submit_feedback(
 
     db.commit()
     db.refresh(message)
+
+    # Mirror the rating onto the interaction audit trail so it stays self-contained.
+    background_tasks.add_task(
+        telemetry.update_interaction_feedback, message_id, feedback_data.rating
+    )
 
     # Automatically curate this feedback into training examples (and optionally
     # queue a draft training job). Runs after the response; model activation

@@ -17,7 +17,7 @@ from typing import Optional, List
 from app.core.auth.auth import get_current_user, require_agent
 from app import models
 from app.core.llm import llm_service
-from app.core import database, config_service, telemetry
+from app.core import database, config_service, telemetry, prompts
 
 router = APIRouter(prefix="/performance", tags=["Performance Agent"])
 
@@ -250,27 +250,7 @@ def _statistics(env: str) -> dict:
 # ── LLM prompt ─────────────────────────────────────────────────────────────────
 
 def _build_prompt(env: str, diagnostics: dict) -> list:
-    system = (
-        "You are a senior Oracle DBA and Oracle E-Business Suite (EBS) performance expert with 15+ years of experience. "
-        "Analyze the provided diagnostic data and return a structured, prioritized report.\n\n"
-        "Use this exact structure:\n\n"
-        "## 📊 Executive Summary\n"
-        "2-3 sentence health overview.\n\n"
-        "## 🚨 Critical Issues\n"
-        "List critical problems (prefix each with ❌).\n\n"
-        "## ⚠️ Warnings\n"
-        "Moderate issues to address soon (prefix each with ⚠️).\n\n"
-        "## ✅ Healthy Areas\n"
-        "Brief note on areas performing well.\n\n"
-        "## 🔧 Recommendations\n\n"
-        "### Priority 1 — Immediate Actions\n"
-        "Numbered. Include exact Oracle SQL/commands.\n\n"
-        "### Priority 2 — Short-Term (This Week)\n"
-        "Numbered. Specific.\n\n"
-        "### Priority 3 — Long-Term Optimizations\n"
-        "Numbered. Architectural improvements.\n\n"
-        "Reference specific metric values from the data. Be concise but precise."
-    )
+    system = prompts.get_prompt("performance.diagnostic")
     data_text = json.dumps(diagnostics, indent=2, default=str)
     if len(data_text) > 6000:
         data_text = data_text[:6000] + "\n...[truncated]"
@@ -540,22 +520,7 @@ def _parse_awr_report(raw: str) -> dict:
 # ── AWR LLM prompts ────────────────────────────────────────────────────────────
 
 def _awr_compare_prompt(env, baseline, compare, b_label, c_label) -> list:
-    system = (
-        "You are a senior Oracle DBA specialising in Oracle E-Business Suite performance tuning. "
-        "Compare two AWR periods and produce a structured report.\n\n"
-        "## 📊 Period Comparison Summary\n"
-        "2-3 sentences. Include whether baseline or comparison is peak/off-peak.\n\n"
-        "## 📉 Regressions (Comparison Period Worse)\n"
-        "Prefix each with ❌. Show exact metric values and Δ%.\n\n"
-        "## 📈 Improvements (Comparison Period Better)\n"
-        "Prefix each with ✅.\n\n"
-        "## 🔍 Root Cause Analysis\n"
-        "Explain the most likely cause for each regression.\n\n"
-        "## 🔧 Remediation\n"
-        "### Priority 1 — Immediate Actions\nExact Oracle SQL / commands.\n\n"
-        "### Priority 2 — Short-Term (This Week)\nSpecific tasks.\n\n"
-        "Be concise and precise. Reference actual numbers."
-    )
+    system = prompts.get_prompt("performance.awr_compare")
     def _trim(d): t = json.dumps(d, indent=2, default=str); return t[:3500] + "\n...[truncated]" if len(t) > 3500 else t
     return [
         {"role": "system", "content": system},
@@ -569,17 +534,7 @@ def _awr_compare_prompt(env, baseline, compare, b_label, c_label) -> list:
 
 
 def _awr_single_prompt(env, parsed, filename) -> list:
-    system = (
-        "You are a senior Oracle DBA specialising in Oracle EBS performance tuning. "
-        "Analyse this AWR report and produce a structured assessment.\n\n"
-        "## 📊 AWR Report Summary\n"
-        "## 🚨 Critical Findings  (❌ prefix)\n"
-        "## ⚠️ Warnings  (⚠️ prefix)\n"
-        "## ✅ Healthy Aspects\n"
-        "## 🔧 Recommendations\n"
-        "### Priority 1 — Immediate\n### Priority 2 — This Week\n### Priority 3 — Long-Term\n\n"
-        "Include exact Oracle SQL / commands where relevant."
-    )
+    system = prompts.get_prompt("performance.awr_single")
     raw  = parsed.get("raw_text", "")[:6500]
     strc = json.dumps(parsed.get("structured", {}), indent=2)
     return [
@@ -593,17 +548,7 @@ def _awr_single_prompt(env, parsed, filename) -> list:
 
 
 def _awr_upload_compare_prompt(env, p1, p2, f1, f2) -> list:
-    system = (
-        "You are a senior Oracle DBA specialising in Oracle EBS performance tuning. "
-        "Compare two AWR reports (Baseline vs Comparison).\n\n"
-        "## 📊 Comparison Summary\n"
-        "## 📉 Regressions (❌ prefix — with exact Δ values)\n"
-        "## 📈 Improvements (✅ prefix)\n"
-        "## 🔍 Root Cause Analysis\n"
-        "## 🔧 Remediation\n"
-        "### Priority 1 — Immediate\n### Priority 2 — This Week\n\n"
-        "Reference specific numbers from both reports."
-    )
+    system = prompts.get_prompt("performance.awr_upload_compare")
     def _trim(p): t = p.get("raw_text","")[:3000]; return t if t else json.dumps(p.get("structured",{}), indent=2)[:3000]
     return [
         {"role": "system", "content": system},

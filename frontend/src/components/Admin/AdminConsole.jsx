@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare, ScrollText } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
 const TABS = [
   { key: 'monitoring',   label: 'Monitoring',    icon: Activity,      roles: ['admin'] },
+  { key: 'interactions', label: 'Interactions',  icon: ScrollText,    roles: ['admin'] },
   { key: 'users',        label: 'Users',         icon: Users,         roles: ['admin', 'dba'] },
   { key: 'roles',        label: 'Roles',         icon: KeyRound,      roles: ['admin'] },
+  { key: 'prompts',      label: 'Agent Prompts', icon: MessageSquare, roles: ['admin'] },
   { key: 'servers',      label: 'SSH Servers',   icon: Server,        roles: ['admin'] },
   { key: 'environments', label: 'Environments',  icon: Globe,         roles: ['admin'] },
   { key: 'llm',          label: 'LLM Providers', icon: Cpu,           roles: ['admin'] },
@@ -49,8 +51,10 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
 
         <div className="admin-body">
           {tab === 'monitoring' && <MonitoringTab />}
+          {tab === 'interactions' && <InteractionsTab />}
           {tab === 'users' && <UsersTab />}
           {tab === 'roles' && <RolesTab />}
+          {tab === 'prompts' && <PromptsTab />}
           {tab === 'servers' && <ServersTab />}
           {tab === 'environments' && <EnvironmentsTab />}
           {tab === 'llm' && <LlmTab />}
@@ -335,6 +339,122 @@ function RolesTab() {
           </Field>
         </FormModal>
       )}
+    </div>
+  );
+}
+
+/* ── Agent Prompts (editable instruction overrides) ─────────────────────────── */
+
+function PromptsTab() {
+  const { rows, error, loading, reload, setError } = useResource('/admin/prompts');
+  const [selected, setSelected] = useState(null);
+
+  // Distinct agents, in registry order.
+  const agents = [];
+  rows.forEach(p => { if (!agents.includes(p.agent)) agents.push(p.agent); });
+  const active = selected && agents.includes(selected) ? selected : agents[0];
+  const list = rows.filter(p => p.agent === active);
+
+  const label = (a) => a.replace(/_/g, ' ');
+  const overridden = (a) => rows.filter(p => p.agent === a && p.is_overridden).length;
+  const total = (a) => rows.filter(p => p.agent === a).length;
+
+  const navBtn = (a) => ({
+    textAlign: 'left', padding: '0.5rem 0.7rem', borderRadius: 7, cursor: 'pointer',
+    textTransform: 'capitalize', fontSize: '0.85rem',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+    border: '1px solid ' + (a === active ? 'var(--accent-primary)' : '#E5E2D8'),
+    background: a === active ? '#FFFFFF' : 'transparent',
+    color: a === active ? 'var(--accent-primary)' : 'inherit',
+    fontWeight: a === active ? 600 : 400,
+  });
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Agent Prompts {loading && <span className="admin-muted">· loading…</span>}</h4>
+      </div>
+      {error && <p className="admin-error">{error}</p>}
+      <p className="admin-muted">
+        Select an agent to view and edit its prompt(s). Keep any <code>{'{placeholder}'}</code> tokens
+        shown — they're filled in at runtime. <strong>Reset</strong> restores the built-in default. The Cloning and
+        Patching agents are deterministic flows with no editable prompt.
+      </p>
+
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+        {/* Agent selector */}
+        <div style={{ flex: '0 0 200px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {agents.map(a => (
+            <button key={a} style={navBtn(a)} onClick={() => setSelected(a)}>
+              <span>{label(a)}</span>
+              {overridden(a) > 0
+                ? <span className="admin-pill admin" title={`${overridden(a)} overridden`}>{overridden(a)}★</span>
+                : <span className="admin-muted" style={{ fontSize: '0.7rem' }}>{total(a)}</span>}
+            </button>
+          ))}
+          {agents.length === 0 && !loading && <span className="admin-muted">No editable prompts.</span>}
+        </div>
+
+        {/* Prompts for the selected agent */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {list.map(p => <PromptCard key={p.key} p={p} reload={reload} setError={setError} />)}
+          {active && list.length === 0 && <p className="admin-muted">No prompts for this agent.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PromptCard({ p, reload, setError }) {
+  const [text, setText] = useState(p.content);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const dirty = text !== p.content;
+
+  const save = async () => {
+    setBusy(true); setMsg(''); setError('');
+    try { await api.put(`/admin/prompts/${p.key}`, { content: text }); setMsg('Saved ✓'); reload(); }
+    catch (e) { setMsg(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    if (!window.confirm(`Reset "${p.label}" to the built-in default?`)) return;
+    setBusy(true); setMsg(''); setError('');
+    try { const r = await api.delete(`/admin/prompts/${p.key}`); setText(r.data.content); setMsg('Reset to default ✓'); reload(); }
+    catch (e) { setMsg(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+
+  const rows = Math.min(22, Math.max(6, text.split('\n').length + 1));
+
+  return (
+    <div style={{ border: '1px solid rgba(0,0,0,0.12)', borderRadius: 8, padding: '0.7rem', marginBottom: '0.7rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <strong>{p.label}</strong>
+        {p.is_overridden
+          ? <span className="admin-pill admin">overridden</span>
+          : <span className="admin-pill ok">default</span>}
+      </div>
+      {p.description && <p className="admin-muted" style={{ fontSize: '0.72rem', margin: '0.2rem 0 0.3rem' }}>{p.description}</p>}
+      {p.placeholders.length > 0 && (
+        <p className="admin-muted" style={{ fontSize: '0.72rem', margin: '0 0 0.3rem' }}>
+          Required placeholders:{' '}
+          {p.placeholders.map(ph => <code key={ph} style={{ marginRight: 6 }}>{`{${ph}}`}</code>)}
+        </p>
+      )}
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        rows={rows}
+        spellCheck={false}
+        style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.78rem', resize: 'vertical' }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: '0.4rem' }}>
+        <button className="admin-btn-primary" disabled={!dirty || busy} onClick={save}>Save</button>
+        <button className="admin-btn-ghost" disabled={!p.is_overridden || busy} onClick={reset}>Reset to default</button>
+        {msg && <span className="admin-muted">{msg}</span>}
+      </div>
     </div>
   );
 }
@@ -1140,6 +1260,185 @@ function TasksModal({ onClose }) {
             <button className="admin-btn-ghost" onClick={() => setLimit(l => l + 100)}>
               Load more ({fmtNum(tasks.length)} of {fmtNum(data.total)})
             </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Interaction audit trail ─────────────────────────────────────────────────── */
+
+function fbBadge(r) {
+  if (r === 1) return <span className="admin-pill ok">👍</span>;
+  if (r === -1) return <span className="admin-pill off">👎</span>;
+  return <span className="admin-muted">—</span>;
+}
+
+function InteractionsTab() {
+  const _blank = () => ({ ..._last24h(), username: '', grounded: '', rating: '' });
+  const [draft, setDraft] = useState(_blank);
+  const [filter, setFilter] = useState(_blank);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [limit, setLimit] = useState(50);
+  const [detailId, setDetailId] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    setData(null);
+    api.get('/admin/monitoring/interactions' + buildQs({ ...filter, limit }))
+      .then(r => { if (active) setData(r.data); })
+      .catch(e => { if (active) setError(e.response?.data?.detail || e.message); });
+    return () => { active = false; };
+  }, [filter, limit]);
+
+  const apply = () => { setLimit(50); setFilter(draft); };
+  const reset = () => { const d = _blank(); setDraft(d); setLimit(50); setFilter(d); };
+  const rows = data?.interactions || [];
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Interaction Audit Trail {data && <span className="admin-muted">· {fmtNum(data.total)} in range</span>}</h4>
+      </div>
+      <p className="admin-muted">
+        Every chat turn with its retrieved KB context, prompt &amp; model version, response, latency and
+        feedback — click a row to inspect and reproduce an issue.
+      </p>
+      {error && <p className="admin-error">{error}</p>}
+      <div style={_filterBar}>
+        <FilterLabel label="From">
+          <input style={_fs} type="datetime-local" value={draft.date_from}
+            onChange={e => setDraft(d => ({ ...d, date_from: e.target.value }))} />
+        </FilterLabel>
+        <FilterLabel label="To">
+          <input style={_fs} type="datetime-local" value={draft.date_to}
+            onChange={e => setDraft(d => ({ ...d, date_to: e.target.value }))} />
+        </FilterLabel>
+        <FilterLabel label="User">
+          <input style={_fs} placeholder="partial match" value={draft.username}
+            onChange={e => setDraft(d => ({ ...d, username: e.target.value }))} />
+        </FilterLabel>
+        <FilterLabel label="Grounding">
+          <select style={_fs} value={draft.grounded}
+            onChange={e => setDraft(d => ({ ...d, grounded: e.target.value }))}>
+            <option value="">All</option>
+            <option value="true">Grounded (KB)</option>
+            <option value="false">Abstained</option>
+          </select>
+        </FilterLabel>
+        <FilterLabel label="Feedback">
+          <select style={_fs} value={draft.rating}
+            onChange={e => setDraft(d => ({ ...d, rating: e.target.value }))}>
+            <option value="">All</option>
+            <option value="1">👍 Positive</option>
+            <option value="-1">👎 Negative</option>
+          </select>
+        </FilterLabel>
+        <button className="admin-btn-primary" onClick={apply}>Apply</button>
+        <button className="admin-btn-ghost" onClick={reset}>Last 24h</button>
+      </div>
+      <table className="admin-table">
+        <thead><tr>
+          <th>Time</th><th>User</th><th>Query</th><th>Model</th>
+          <th>Prompt&nbsp;ver</th><th>RAG</th><th>Latency</th><th>Feedback</th>
+        </tr></thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setDetailId(r.id)}>
+              <td className="admin-muted">{ago(r.created_at)}</td>
+              <td>{r.username}</td>
+              <td>{r.query}</td>
+              <td className="admin-muted">{r.model}</td>
+              <td className="admin-muted" style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{r.prompt_version || '—'}</td>
+              <td>{r.grounded
+                ? <span className="admin-pill ok">{fmtNum(r.rag_chunks)} chunks</span>
+                : <span className="admin-muted">—</span>}</td>
+              <td>{r.latency_ms != null ? `${fmtNum(r.latency_ms)} ms` : '—'}</td>
+              <td>{fbBadge(r.feedback_rating)}</td>
+            </tr>
+          ))}
+          {data && rows.length === 0 && <tr><td colSpan={8} className="admin-muted">No interactions recorded in this range.</td></tr>}
+          {!data && !error && <tr><td colSpan={8} className="admin-muted">Loading…</td></tr>}
+        </tbody>
+      </table>
+      {data && data.total > rows.length && (
+        <button className="admin-btn-ghost" onClick={() => setLimit(l => l + 50)}>
+          Load more ({fmtNum(rows.length)} of {fmtNum(data.total)})
+        </button>
+      )}
+      {detailId != null && <InteractionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
+    </div>
+  );
+}
+
+function InteractionMeta({ label, value }) {
+  return (
+    <div className="mon-card">
+      <div className="mon-card-label">{label}</div>
+      <div className="mon-card-value" style={{ fontSize: '0.92rem', wordBreak: 'break-word' }}>{value}</div>
+    </div>
+  );
+}
+
+function InteractionSection({ title, children }) {
+  return (
+    <div style={{ marginTop: '0.9rem' }}>
+      <h4 style={{ margin: '0 0 0.3rem', fontSize: '0.85rem' }}>{title}</h4>
+      <pre style={{
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#0c1322',
+        border: '1px solid #2a3a55', borderRadius: 7, padding: '0.6rem',
+        fontSize: '0.78rem', maxHeight: 300, overflow: 'auto', margin: 0, color: '#e6ecf5',
+      }}>{children}</pre>
+    </div>
+  );
+}
+
+function InteractionDetailModal({ id, onClose }) {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    api.get(`/admin/monitoring/interactions/${id}`)
+      .then(r => { if (active) setD(r.data); })
+      .catch(e => { if (active) setError(e.response?.data?.detail || e.message); });
+    return () => { active = false; };
+  }, [id]);
+
+  const fb = (r) => (r === 1 ? '👍 positive' : r === -1 ? '👎 negative' : '—');
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <div className="admin-form mon-tasks-modal" onMouseDown={e => e.stopPropagation()}>
+        <div className="admin-form-header">
+          <h4>Interaction #{id}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          {error && <p className="admin-error">{error}</p>}
+          {!d && !error && <p className="admin-muted">Loading…</p>}
+          {d && (
+            <>
+              <div className="mon-cards">
+                <InteractionMeta label="When" value={ago(d.created_at)} />
+                <InteractionMeta label="User" value={d.username} />
+                <InteractionMeta label="Provider / Model" value={`${d.provider} / ${d.model}`} />
+                <InteractionMeta label="Prompt" value={`${d.prompt_key || '—'} · ${d.prompt_version || '—'}`} />
+                <InteractionMeta label="Tokens (in / out)" value={`${fmtNum(d.prompt_tokens)} / ${fmtNum(d.completion_tokens)}`} />
+                <InteractionMeta label="Latency" value={d.latency_ms != null ? `${fmtNum(d.latency_ms)} ms` : '—'} />
+                <InteractionMeta label="Grounded" value={d.grounded ? `yes · ${fmtNum(d.rag_chunks)} chunks` : 'no (abstained)'} />
+                <InteractionMeta label="Feedback" value={fb(d.feedback_rating)} />
+              </div>
+              <InteractionSection title="User Query">{d.query}</InteractionSection>
+              <InteractionSection title="Retrieved KB Context (RAG)">
+                {d.rag_context || '— no context (abstained or simple query) —'}
+              </InteractionSection>
+              <InteractionSection title="Generated Response">{d.response || '—'}</InteractionSection>
+              <p className="admin-muted" style={{ fontSize: '0.72rem', marginTop: '0.6rem' }}>
+                session #{d.session_id ?? '—'} · message #{d.message_id ?? '—'}
+              </p>
+            </>
           )}
         </div>
       </div>

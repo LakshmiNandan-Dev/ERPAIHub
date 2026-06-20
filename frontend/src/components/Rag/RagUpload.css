@@ -179,7 +179,8 @@
   color: #BF4A3C;
 }
 
-.doc-delete-btn {
+.doc-delete-btn,
+.doc-reindex-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -189,12 +190,22 @@
   transition: all 0.2s;
 }
 
-.docs-table tr:hover .doc-delete-btn {
+.doc-reindex-btn {
+  margin-right: 0.35rem;
+}
+
+.docs-table tr:hover .doc-delete-btn,
+.docs-table tr:hover .doc-reindex-btn {
   opacity: 1;
 }
 
 .doc-delete-btn:hover {
   color: var(--danger);
+}
+
+.doc-reindex-btn:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 /* Multi-tab Controls */

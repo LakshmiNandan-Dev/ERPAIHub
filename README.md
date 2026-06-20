@@ -123,11 +123,13 @@ A document store that feeds verified context into every chat query, using two-st
 retrieval (embedding recall → cross-encoder reranking) with a live web fallback.
 
 - **Upload:** PDF, TXT, or Markdown files up to 50 MB. The API responds immediately and indexes in the background using ChromaDB + `sentence-transformers` embeddings.
-- **Duplicate guard:** each upload is hashed (SHA-256 of the raw bytes); re-uploading byte-identical content — even under a different filename — is rejected with `409 Conflict` naming the existing document. A previously *failed* index can still be retried.
+- **Duplicate guard:** each upload is hashed (SHA-256 of the raw bytes); re-uploading byte-identical content — even under a different filename — is rejected with `409 Conflict` naming the existing document. A previously *failed* index can still be retried. To change a document, use the in-place re-index path below rather than delete + re-upload.
+- **Incremental re-index:** `PUT /rag/documents/{id}` (the ♻️ update action in the KB table) replaces a document with an updated file and re-embeds **only the chunks whose text actually changed** — chunk ids are content-addressed (hash of the chunk text), so a one-line edit re-embeds one chunk instead of the whole file. Removed chunks are dropped, unchanged chunks are reused, and a byte-identical re-upload is a no-op. Deployment-step auto-indexing uses the same delta path.
 - **Advanced retrieval:** a wide embedding search pulls candidate chunks (recall), then a cross-encoder reranker (`ms-marco-MiniLM-L-6-v2`) reorders them for precision; only chunks above the relevance floor are prepended to the LLM prompt as `[VERIFIED REFERENCE DOCUMENTATION]`. If the reranker can't load (e.g. air-gapped first run) retrieval falls back to embedding-distance filtering automatically.
+- **Caching (Redis):** query embeddings (deterministic, long TTL) and full retrieval results are cached to cut repeat-query latency. Retrieval results are version-stamped, so any index / delete / re-index bumps the version and makes stale results unreachable immediately.
 - **Web fallback:** when the local knowledge base has no confident match, a live **DuckDuckGo** search grounds the answer instead of returning nothing. (Disabled per-tool for the MCP knowledge-base lookup, which stays local-only.)
 - **Auto-indexing:** successful deployment step logs are automatically added as structured markdown documents so the agent can recall what commands were run against which environment.
-- **Management:** list all documents (with status: indexing / ready / failed) and delete individual records.
+- **Management:** list all documents (with status: indexing / ready / failed), update in place (re-index), and delete individual records.
 
 **Retrieval tuning** (environment variables, all optional):
 
@@ -136,8 +138,11 @@ retrieval (embedding recall → cross-encoder reranking) with a live web fallbac
 | `RAG_RERANK_ENABLED` | `1` | Enable cross-encoder reranking |
 | `RAG_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Reranker model |
 | `RAG_RERANK_CANDIDATES` | `20` | Candidates pulled before reranking |
-| `RAG_RERANK_MIN_SCORE` | `0.0` | Relevance floor; below it a query is a local miss |
+| `RAG_RERANK_MIN_SCORE` | `2.0` | Relevance floor (cross-encoder logits); below it a query is a local miss |
 | `RAG_WEB_FALLBACK_ENABLED` | `1` | Fall back to DuckDuckGo on a local miss |
+| `RAG_CACHE_ENABLED` | `1` | Cache query embeddings + retrieval results in Redis |
+| `RAG_CACHE_TTL` | `3600` | Retrieval-result cache TTL (seconds) |
+| `EMBED_CACHE_TTL` | `86400` | Query-embedding cache TTL (seconds) |
 
 ---
 
@@ -161,12 +166,13 @@ FastAPI  :8000
     ├── Deployments router — create / cancel / retry / migrate deployment runs
     ├── Deployment agent   — background task: extract steps, execute via DB or SSH
     ├── Performance agent  — diagnostic queries + AWR analysis
+    ├── Monitoring router  — live telemetry, RAG metrics, interaction audit trail (admin)
     └── RLAIF service      — background QA audit per AI response
     │
-    ├── PostgreSQL :5432   — users, sessions, chat history, RAG records, deployment runs + steps
+    ├── PostgreSQL :5432   — users, sessions, chat history, RAG records, deployment runs, interaction logs
     ├── ChromaDB           — vector embeddings (embedded inside API container)
     ├── Ollama  :11434     — local LLM inference
-    └── Redis   :6379      — available for caching / queuing
+    └── Redis   :6379      — live telemetry + LLM / RAG response & embedding caches
 ```
 
 ---
@@ -340,10 +346,14 @@ APP_SECRET_KEY=change-me-to-a-long-random-string
 The **first registered user automatically becomes an administrator**. Admins get an
 **Admin Console** (user-menu → Admin Console) to centrally manage:
 
-- **Users** — create accounts, grant/revoke admin, enable/disable, reset passwords.
+- **Monitoring** — live telemetry (connected users, open streams, request/token counters, tasks executed) plus RAG retrieval & grounded-generation quality metrics.
+- **Interactions** — a durable per-turn audit trail: every chat turn's query, retrieved RAG context, prompt + model version, generated response, latency, token usage and 👍/👎 feedback. Filterable (by time / user / grounded / feedback) and row-inspectable so any issue can be reproduced later.
+- **Users** & **Roles** — create accounts, grant/revoke admin, approve/enable/disable, reset passwords, and gate which agents each role may invoke.
+- **Agent Routing** & **Agent Prompts** — assign a provider + small/large model pair per agent (with complexity-based routing), and override each agent's system prompt.
 - **SSH Servers** & **Environments** — connection details and credentials, encrypted at rest.
 - **LLM Providers** — API keys for OpenAI / Anthropic / Gemini, encrypted at rest and injected
   server-side (keys are never sent from the browser).
+- **Training**, **Integrations**, **Authentication (SSO)**, **Audit** — fine-tuning data/jobs, Git/Confluence credentials, SSO settings, and the auth/agent-invocation audit log.
 
 Promote an existing user to admin from the `api/` directory:
 

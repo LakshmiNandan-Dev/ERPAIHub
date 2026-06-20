@@ -83,3 +83,18 @@ class AgentLlmPolicy(Base):
     created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class AgentPrompt(Base):
+    """
+    Admin override for an agent prompt. The canonical default for each prompt
+    lives in code (app.core.prompts); a row here overrides it by ``prompt_key``.
+    Absence of a row = use the built-in default (a 'reset' deletes the row).
+    """
+    __tablename__ = "agent_prompts"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    prompt_key = Column(String(80), unique=True, nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))

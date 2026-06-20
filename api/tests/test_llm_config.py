@@ -18,7 +18,7 @@ class TestLlmConfig:
 
     def test_create_llm_provider(self, client, admin_headers):
         """TC-LM-01: Admin can register an LLM provider credential."""
-        r = client.post("/admin/llm", json=self._llm_payload(), headers=admin_headers)
+        r = client.post("/admin/llm-credentials", json=self._llm_payload(), headers=admin_headers)
         assert r.status_code == 201
         data = r.json()
         assert data["provider"] == "ollama"
@@ -26,9 +26,9 @@ class TestLlmConfig:
         assert "api_key_enc" not in data
 
     def test_list_llm_providers(self, client, admin_headers):
-        """TC-LM-02: GET /admin/llm lists all registered providers."""
-        client.post("/admin/llm", json=self._llm_payload(), headers=admin_headers)
-        r = client.get("/admin/llm", headers=admin_headers)
+        """TC-LM-02: GET /admin/llm-credentials lists all registered providers."""
+        client.post("/admin/llm-credentials", json=self._llm_payload(), headers=admin_headers)
+        r = client.get("/admin/llm-credentials", headers=admin_headers)
         assert r.status_code == 200
         assert isinstance(r.json(), list)
         assert len(r.json()) >= 1
@@ -37,7 +37,7 @@ class TestLlmConfig:
         """TC-LM-03: API key is never returned in LLM provider responses."""
         payload = self._llm_payload(provider="openai", model="gpt-4o")
         payload["api_key"] = "sk-supersecretkey12345"
-        r = client.post("/admin/llm", json=payload, headers=admin_headers)
+        r = client.post("/admin/llm-credentials", json=payload, headers=admin_headers)
         assert r.status_code == 201
         body = r.json()
         assert "api_key" not in body
@@ -49,7 +49,7 @@ class TestLlmConfig:
         """TC-LM-04: Default provider appears first in the config/llm endpoint."""
         p = self._llm_payload()
         p["is_default"] = True
-        r = client.post("/admin/llm", json=p, headers=admin_headers)
+        r = client.post("/admin/llm-credentials", json=p, headers=admin_headers)
         provider_id = r.json()["id"]
 
         r2 = client.get("/config/llm", headers=admin_headers)
@@ -79,23 +79,23 @@ class TestLlmConfig:
             pytest.skip("User login unavailable")
         tok = r_login.json()["session_token"]
         user_hdrs = {"Authorization": f"Bearer {tok}"}
-        r3 = client.post("/admin/llm", json=self._llm_payload(), headers=user_hdrs)
+        r3 = client.post("/admin/llm-credentials", json=self._llm_payload(), headers=user_hdrs)
         assert r3.status_code == 403
 
     def test_delete_llm_provider(self, client, admin_headers):
         """TC-LM-06: Admin can delete an LLM provider."""
-        r = client.post("/admin/llm", json=self._llm_payload(), headers=admin_headers)
+        r = client.post("/admin/llm-credentials", json=self._llm_payload(), headers=admin_headers)
         llm_id = r.json()["id"]
-        r_del = client.delete(f"/admin/llm/{llm_id}", headers=admin_headers)
+        r_del = client.delete(f"/admin/llm-credentials/{llm_id}", headers=admin_headers)
         assert r_del.status_code in (200, 204)
         # Should no longer appear in list
-        r_list = client.get("/admin/llm", headers=admin_headers)
+        r_list = client.get("/admin/llm-credentials", headers=admin_headers)
         ids = [item["id"] for item in r_list.json()]
         assert llm_id not in ids
 
     def test_config_llm_endpoint_no_secrets(self, client, admin_headers):
         """TC-LM-03 (config): GET /config/llm returns provider list without secrets."""
-        client.post("/admin/llm", json=self._llm_payload(), headers=admin_headers)
+        client.post("/admin/llm-credentials", json=self._llm_payload(), headers=admin_headers)
         r = client.get("/config/llm", headers=admin_headers)
         assert r.status_code == 200
         for item in r.json():

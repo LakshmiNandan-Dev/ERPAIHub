@@ -9,6 +9,7 @@ export default function RagUpload({ onClose }) {
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState('');
   const [pollTimer, setPollTimer] = useState(null);
+  const [reindexId, setReindexId] = useState(null);
   
   // RL & RLAIF Stats State
   const [rlStats, setRlStats] = useState({
@@ -123,6 +124,7 @@ export default function RagUpload({ onClose }) {
   };
 
   const fileInputRef = useRef(null);
+  const reindexInputRef = useRef(null);
 
   const handleTestConnection = () => {
     setDbStatus('loading');
@@ -204,6 +206,41 @@ export default function RagUpload({ onClose }) {
     e.preventDefault();
     setDragOver(false);
     handleUpload(e.dataTransfer.files[0]);
+  };
+
+  const handleReindexClick = (docId) => {
+    setReindexId(docId);
+    reindexInputRef.current.click();
+  };
+
+  // Replace an existing document with an updated file. The backend re-indexes
+  // incrementally — only chunks whose text changed are re-embedded.
+  const handleReindex = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';           // allow re-selecting the same file later
+    if (!file || reindexId == null) return;
+
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['pdf', 'txt', 'md'].includes(ext)) {
+      setError('Only PDF, TXT, and MD files are supported.');
+      setReindexId(null);
+      return;
+    }
+
+    setError('');
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await api.put(`/rag/documents/${reindexId}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setDocuments(prev => prev.map(d => (d.id === reindexId ? res.data : d)));
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Re-index failed.');
+    } finally {
+      setReindexId(null);
+    }
   };
 
   const handleDelete = async (docId) => {
@@ -311,6 +348,15 @@ export default function RagUpload({ onClose }) {
               )}
             </div>
 
+            {/* Hidden input for incremental re-index (update an existing doc) */}
+            <input
+              ref={reindexInputRef}
+              type="file"
+              accept=".pdf,.txt,.md"
+              style={{ display: 'none' }}
+              onChange={handleReindex}
+            />
+
             {/* Documents Table */}
             <div className="docs-list">
               {documents.length === 0 ? (
@@ -336,6 +382,14 @@ export default function RagUpload({ onClose }) {
                         <td>{doc.chunk_count ?? '—'}</td>
                         <td>{new Date(doc.created_at).toLocaleDateString()}</td>
                         <td>
+                          {['pdf', 'txt', 'md'].includes(doc.file_type) && (
+                            <button
+                              className="doc-reindex-btn"
+                              onClick={() => handleReindexClick(doc.id)}
+                              disabled={reindexId === doc.id}
+                              title="Update with a new version — re-indexes incrementally (only changed chunks)"
+                            >{reindexId === doc.id ? '⏳' : '♻️'}</button>
+                          )}
                           <button
                             className="doc-delete-btn"
                             onClick={() => handleDelete(doc.id)}

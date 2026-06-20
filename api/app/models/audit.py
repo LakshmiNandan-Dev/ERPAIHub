@@ -46,3 +46,37 @@ class UsageEvent(Base):
     context_chars = Column(Integer, nullable=False, server_default='0')
     duration_ms = Column(Integer, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'), index=True)
+
+
+class InteractionLog(Base):
+    """Durable per-interaction audit trail — one row per chat turn.
+
+    Captures the complete request/response so an issue can be reproduced later:
+    the user query, the retrieved RAG context, the prompt + model version that
+    produced it, the generated response, latency, and (once submitted) the user's
+    thumbs up/down. The user/session/message links are SET NULL on delete, but
+    the denormalized fields (username, query, response, feedback) survive so the
+    trail stays meaningful even after the source session is gone.
+    """
+    __tablename__ = "interaction_logs"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    session_id = Column(Integer, ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    username = Column(String(100), nullable=True)
+    query = Column(Text, nullable=False)                  # the user's question
+    response = Column(Text, nullable=True)                # the generated answer
+    rag_context = Column(Text, nullable=True)             # retrieved documents (grounding)
+    rag_chunks = Column(Integer, nullable=False, server_default='0')
+    grounded = Column(Boolean, nullable=False, server_default=text('false'))
+    provider = Column(String(50), nullable=True)
+    model = Column(String(150), nullable=True)            # model version
+    prompt_key = Column(String(100), nullable=True)       # registry key in effect
+    prompt_version = Column(String(64), nullable=True)    # hash of the resolved prompt
+    prompt_tokens = Column(Integer, nullable=False, server_default='0')
+    completion_tokens = Column(Integer, nullable=False, server_default='0')
+    total_tokens = Column(Integer, nullable=False, server_default='0')
+    latency_ms = Column(Integer, nullable=True)
+    feedback_rating = Column(Integer, nullable=True)      # +1/-1, denormalized from the message
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'), index=True)

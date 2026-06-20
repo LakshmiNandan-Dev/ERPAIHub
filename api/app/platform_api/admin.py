@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from app.core import database, crypto
+from app.core import database, crypto, prompts
 from app import schemas, models
 from app.common import utils
 from app.core.llm import llm_service, llm_guard_service, model_router
@@ -302,6 +302,56 @@ def delete_role(role_id: int,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Agent prompts (editable instruction overrides)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/prompts", response_model=List[schemas.PromptOut])
+def list_prompts(db: Session = Depends(database.get_db),
+                 _: models.User = Depends(get_current_admin)):
+    """All editable agent prompts with their default + current (override) content."""
+    overrides = {r.prompt_key: r.content for r in db.query(models.AgentPrompt).all()}
+    return [prompts.build_out(d["key"], overrides.get(d["key"])) for d in prompts.all_definitions()]
+
+
+@router.put("/prompts/{prompt_key}", response_model=schemas.PromptOut)
+def update_prompt(prompt_key: str, payload: schemas.PromptUpdate,
+                  db: Session = Depends(database.get_db),
+                  admin: models.User = Depends(get_current_admin)):
+    """Override a prompt. Rejects unknown keys and edits that drop a required placeholder."""
+    if prompts.definition(prompt_key) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown prompt key")
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Prompt content cannot be empty")
+    missing = prompts.missing_placeholders(prompt_key, content)
+    if missing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Prompt must keep these placeholders: {', '.join('{'+m+'}' for m in missing)}")
+    row = db.query(models.AgentPrompt).filter(models.AgentPrompt.prompt_key == prompt_key).first()
+    if row:
+        row.content = content
+        row.updated_by = admin.id
+    else:
+        db.add(models.AgentPrompt(prompt_key=prompt_key, content=content, updated_by=admin.id))
+    db.commit()
+    return prompts.build_out(prompt_key, content)
+
+
+@router.delete("/prompts/{prompt_key}", response_model=schemas.PromptOut)
+def reset_prompt(prompt_key: str,
+                 db: Session = Depends(database.get_db),
+                 _: models.User = Depends(get_current_admin)):
+    """Reset a prompt to its built-in default (delete the override row)."""
+    if prompts.definition(prompt_key) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown prompt key")
+    row = db.query(models.AgentPrompt).filter(models.AgentPrompt.prompt_key == prompt_key).first()
+    if row:
+        db.delete(row)
+        db.commit()
+    return prompts.build_out(prompt_key, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SSH servers
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -370,18 +420,45 @@ def test_server(server_id: int,
     s = db.query(models.SshServer).filter(models.SshServer.id == server_id).first()
     if not s:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Server not found")
+
+    import socket
+    host, port = s.hostname, s.port or 22
+
+    # 1. TCP reachability first — distinguishes "can't reach the host" (firewall /
+    #    VPN / wrong host / not routable from this API host) from an SSH/auth issue.
+    try:
+        socket.create_connection((host, port), timeout=8).close()
+    except socket.timeout:
+        return {"ok": False, "message": (
+            f"TCP connection to {host}:{port} timed out — the host didn't respond. "
+            "The port is likely blocked by a firewall, or the host isn't routable from "
+            "the server running this app (e.g. it's on a VPN/private network the API host "
+            "can't reach). Verify the host/port and that this app's host can reach it.")}
+    except OSError as exc:
+        return {"ok": False, "message": (
+            f"Cannot reach {host}:{port} — {exc.strerror or exc}. "
+            "Check the hostname/port and that SSH is listening and reachable from this app's host.")}
+
+    # 2. TCP is open — now the SSH handshake + auth.
     try:
         import paramiko
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(
-            hostname=s.hostname, port=s.port or 22, username=s.username,
-            password=crypto.decrypt(s.password_enc), timeout=10,
+            hostname=host, port=port, username=s.username,
+            password=crypto.decrypt(s.password_enc),
+            timeout=10, banner_timeout=10, auth_timeout=10,
         )
         client.close()
-        return {"ok": True, "message": f"Connected to {s.hostname}:{s.port} successfully."}
+        return {"ok": True, "message": f"Connected to {host}:{port} successfully."}
+    except paramiko.AuthenticationException:
+        return {"ok": False, "message": (
+            f"Reached {host}:{port}, but authentication failed for user '{s.username}'. "
+            "Check the username and password.")}
+    except paramiko.SSHException as exc:
+        return {"ok": False, "message": f"Reached {host}:{port}, but the SSH handshake failed: {exc}"}
     except Exception as exc:
-        return {"ok": False, "message": f"Connection failed: {exc}"}
+        return {"ok": False, "message": f"SSH connection to {host}:{port} failed: {exc}"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

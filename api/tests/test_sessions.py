@@ -21,10 +21,19 @@ class TestSessionIsolation:
         other_ids = [s["id"] for s in r.json()]
         assert sid not in other_ids
 
-    def test_sessions_ordered_newest_first(self, client, admin_headers):
+    def test_sessions_ordered_newest_first(self, client, admin_headers, db_session):
         """TC-SM-03: GET /chat/sessions returns sessions in descending created_at order."""
+        from datetime import datetime, timedelta, timezone
+        from app import models
+
         s1 = chat_session(client, admin_headers)
         s2 = chat_session(client, admin_headers)
+        # Inside the test's single DB transaction every row shares the same now()
+        # default, so back-date s1 to actually exercise the descending-order query.
+        row1 = db_session.get(models.ChatSession, s1)
+        row1.created_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        db_session.flush()
+
         r = client.get("/chat/sessions", headers=admin_headers)
         ids = [s["id"] for s in r.json()]
         # s2 was created later so it should appear before s1

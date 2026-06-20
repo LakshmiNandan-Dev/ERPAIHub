@@ -16,7 +16,7 @@ from typing import Optional, Any, List
 from app.core.auth.auth import get_current_user, require_agent
 from app import models
 from app.core.llm import llm_service
-from app.core import database, config_service, telemetry
+from app.core import database, config_service, telemetry, prompts
 from app.modules.dba.deployment.deployments import extract_deployment_steps
 
 router = APIRouter(prefix="/deployments/agent", tags=["Deployment Agent"])
@@ -49,46 +49,9 @@ Available tools (use EXACTLY these names):
   trigger_deployment       — Launch the deployment (only after the user confirms).
   finish                   — End the session with a closing message."""
 
-_SYSTEM_PROMPT = """\
-You are an Oracle EBS Deployment Agent. Use the ReAct pattern: think, then act.
-
-{tools}
-
-You must collect these details before deploying:
-1. deployment_instructions — what files/packages to deploy. Can come from:
-   a. User pasting text directly (field: instructions)
-   b. Confluence page — collect confluence_url then confluence_token, then call fetch_confluence_page
-2. target_environment — DEV, UAT, UAT2, or PROD
-3. ssh_server — which server from the get_servers list
-4. source_type — "git" (files on a Git repo) or "local" (files already on the server)
-5. git_url and git_branch — only if source_type is "git"
-6. git_token — personal access token for private Git repos (ask after git_branch; user may say "none" if public)
-
-ALWAYS respond in exactly this format (three lines, no extra text before or after):
-
-Thought: your reasoning here — one or two plain sentences
-Action: one tool name from the list above
-Action Input: for request_user_input write {{"field":"<fieldname>","question":"<your question>"}} — for fetch_confluence_page write {{"url":"<url>","token":"<token>"}} — for all other tools write a plain string or leave empty
-
-Valid field names: instructions, confluence_url, confluence_token, environment, server, source_type, git_url, git_branch, git_token, confirmation
-
-Example turn:
-Thought: The user has not told me what to deploy. I should ask for instructions first.
-Action: request_user_input
-Action Input: {{"field":"instructions","question":"What files or packages need to be deployed? Paste your notes, describe the changes, or provide a Confluence page URL."}}
-
-Rules:
-- One action per turn only.
-- Call get_environments before asking which environment. Call get_servers before asking which server.
-- If the user provides a Confluence URL: ask for confluence_token, then call fetch_confluence_page.
-- After extract_steps always call present_plan. Never skip straight to trigger_deployment.
-- If user says yes/ok/proceed after seeing the plan, call trigger_deployment immediately.
-- If user says cancel or no, call finish.
-- Do not ask for information already shown in the context below.
-
-Current context (do NOT ask again for non-null fields):
-{context}
-"""
+# The deployment ReAct system prompt is admin-editable; its default lives in the
+# prompt registry (app.core.prompts → "deployment.system"). Resolved per request
+# via prompts.get_prompt("deployment.system", tools=…, context=…).
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
@@ -477,7 +440,7 @@ async def react_loop(
             break  # budget exhausted — drop to the deterministic fallback below
 
         # Build messages with a clean context snapshot each turn
-        system   = _SYSTEM_PROMPT.format(tools=_TOOLS_DOC, context=_ctx_str()) + cred_note
+        system   = prompts.get_prompt("deployment.system", tools=_TOOLS_DOC, context=_ctx_str()) + cred_note
         messages = [{"role": "system", "content": system}] + _trim_history(history)
 
         raw = None

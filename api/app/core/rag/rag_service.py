@@ -182,10 +182,76 @@ def get_named_collection(name: str):
     )
 
 
+def _incremental_upsert(collection, model, doc_id: int, texts: list,
+                        base_metadata: dict, id_prefix: str = "doc") -> dict:
+    """
+    Content-addressed incremental indexing for a single document.
+
+    Each chunk's id is derived from a hash of its *text*, so re-indexing an
+    edited document only embeds chunks whose content is new or changed:
+    unchanged chunks are left in place (never re-embedded) and chunks that
+    disappeared from the new version are deleted. This is what makes rapid
+    re-uploads cheap — a one-line edit re-embeds one chunk, not the whole file,
+    whereas the old positional-id scheme re-embedded every chunk every time.
+
+    Returns {"total", "added", "deleted", "unchanged"} chunk counts.
+    """
+    # Desired state: a stable id per unique chunk text (first position wins,
+    # which also collapses byte-identical repeated chunks to one embedding).
+    desired = {}
+    for i, t in enumerate(texts):
+        h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
+        desired.setdefault(f"{id_prefix}{doc_id}_{h}", (t, i))
+
+    # Current state for this doc — ids only (documents/embeddings skipped, cheap).
+    try:
+        existing_ids = set(
+            collection.get(where={"doc_id": str(doc_id)}, include=[]).get("ids", [])
+        )
+    except Exception:
+        existing_ids = set()
+
+    desired_ids = set(desired)
+    to_add = desired_ids - existing_ids
+    to_delete = existing_ids - desired_ids
+
+    # Drop chunks that are gone in the new version (also migrates legacy
+    # positional ids — `doc5_chunk0` — to content-addressed ids on first re-index).
+    if to_delete:
+        collection.delete(ids=list(to_delete))
+
+    # Embed + upsert ONLY the new/changed chunks, preserving document order.
+    added = sorted(to_add, key=lambda cid: desired[cid][1])
+    if added:
+        add_texts = [desired[cid][0] for cid in added]
+        embeddings = model.encode(add_texts).tolist()
+        metadatas = [
+            {**base_metadata, "doc_id": str(doc_id),
+             "chunk_index": desired[cid][1], "chunk_hash": cid.rsplit("_", 1)[-1]}
+            for cid in added
+        ]
+        batch = 100
+        for start in range(0, len(added), batch):
+            collection.upsert(
+                ids=added[start:start + batch],
+                embeddings=embeddings[start:start + batch],
+                documents=add_texts[start:start + batch],
+                metadatas=metadatas[start:start + batch],
+            )
+
+    return {
+        "total": len(desired_ids),
+        "added": len(to_add),
+        "deleted": len(to_delete),
+        "unchanged": len(desired_ids & existing_ids),
+    }
+
+
 def index_document(file_bytes: bytes, filename: str, doc_id: int) -> int:
     """
-    Parse, chunk, embed, and store a document into ChromaDB.
-    Returns the number of chunks stored.
+    Parse, chunk, embed, and store a document into ChromaDB. Indexing is
+    *incremental*: re-indexing the same ``doc_id`` only embeds chunks whose text
+    changed (see :func:`_incremental_upsert`). Returns the total chunk count.
     """
     collection = _get_collection()
     model = _get_embedding_model()
@@ -207,36 +273,25 @@ def index_document(file_bytes: bytes, filename: str, doc_id: int) -> int:
         docs = loader.load()
         splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
         chunks = splitter.split_documents(docs)
-
-        if not chunks:
-            return 0
-
         texts = [c.page_content for c in chunks]
-        embeddings = model.encode(texts).tolist()
-        ids = [f"doc{doc_id}_chunk{i}" for i in range(len(chunks))]
-        metadatas = [{"doc_id": str(doc_id), "filename": filename, "chunk_index": i} for i in range(len(chunks))]
 
-        # Upsert in batches of 100
-        batch = 100
-        for start in range(0, len(texts), batch):
-            collection.upsert(
-                ids=ids[start:start + batch],
-                embeddings=embeddings[start:start + batch],
-                documents=texts[start:start + batch],
-                metadatas=metadatas[start:start + batch],
-            )
-
-        _bump_rag_version()  # corpus changed — invalidate cached retrievals
-        return len(chunks)
+        stats = _incremental_upsert(collection, model, doc_id, texts,
+                                    {"filename": filename}, id_prefix="doc")
+        if stats["added"] or stats["deleted"]:
+            _bump_rag_version()  # corpus changed — invalidate cached retrievals
+        print(f"[RAG] index doc_id={doc_id}: {stats['added']} new, "
+              f"{stats['deleted']} removed, {stats['unchanged']} reused "
+              f"(total {stats['total']} chunks).")
+        return stats["total"]
     finally:
         os.unlink(tmp_path)
 
 
 def index_text(text: str, doc_id: int, metadata: dict) -> int:
     """
-    Chunk, embed, and store plain text directly into ChromaDB.
-    Used to index deployment step results without needing a file upload.
-    Returns number of chunks stored.
+    Chunk, embed, and store plain text directly into ChromaDB. Incremental in the
+    same way as :func:`index_document`. Used to index deployment step results
+    without a file upload. Returns the total chunk count.
     """
     collection = _get_collection()
     model      = _get_embedding_model()
@@ -244,25 +299,11 @@ def index_text(text: str, doc_id: int, metadata: dict) -> int:
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks   = splitter.split_text(text)
 
-    if not chunks:
-        return 0
-
-    embeddings = model.encode(chunks).tolist()
-    ids        = [f"dep{doc_id}_chunk{i}" for i in range(len(chunks))]
-    metadatas  = [{**metadata, "doc_id": str(doc_id), "chunk_index": i}
-                  for i in range(len(chunks))]
-
-    batch = 100
-    for start in range(0, len(chunks), batch):
-        collection.upsert(
-            ids=ids[start:start + batch],
-            embeddings=embeddings[start:start + batch],
-            documents=chunks[start:start + batch],
-            metadatas=metadatas[start:start + batch],
-        )
-
-    _bump_rag_version()  # corpus changed — invalidate cached retrievals
-    return len(chunks)
+    stats = _incremental_upsert(collection, model, doc_id, chunks,
+                                metadata, id_prefix="dep")
+    if stats["added"] or stats["deleted"]:
+        _bump_rag_version()  # corpus changed — invalidate cached retrievals
+    return stats["total"]
 
 
 def search_web_fallback(query: str, max_results: int = 3) -> str:
