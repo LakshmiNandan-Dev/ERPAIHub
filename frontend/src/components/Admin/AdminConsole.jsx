@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare, ScrollText } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
 const TABS = [
   { key: 'monitoring',   label: 'Monitoring',    icon: Activity,      roles: ['admin'] },
+  { key: 'interactions', label: 'Interactions',  icon: ScrollText,    roles: ['admin'] },
   { key: 'users',        label: 'Users',         icon: Users,         roles: ['admin', 'dba'] },
   { key: 'roles',        label: 'Roles',         icon: KeyRound,      roles: ['admin'] },
   { key: 'prompts',      label: 'Agent Prompts', icon: MessageSquare, roles: ['admin'] },
@@ -50,6 +51,7 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
 
         <div className="admin-body">
           {tab === 'monitoring' && <MonitoringTab />}
+          {tab === 'interactions' && <InteractionsTab />}
           {tab === 'users' && <UsersTab />}
           {tab === 'roles' && <RolesTab />}
           {tab === 'prompts' && <PromptsTab />}
@@ -1258,6 +1260,185 @@ function TasksModal({ onClose }) {
             <button className="admin-btn-ghost" onClick={() => setLimit(l => l + 100)}>
               Load more ({fmtNum(tasks.length)} of {fmtNum(data.total)})
             </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Interaction audit trail ─────────────────────────────────────────────────── */
+
+function fbBadge(r) {
+  if (r === 1) return <span className="admin-pill ok">👍</span>;
+  if (r === -1) return <span className="admin-pill off">👎</span>;
+  return <span className="admin-muted">—</span>;
+}
+
+function InteractionsTab() {
+  const _blank = () => ({ ..._last24h(), username: '', grounded: '', rating: '' });
+  const [draft, setDraft] = useState(_blank);
+  const [filter, setFilter] = useState(_blank);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [limit, setLimit] = useState(50);
+  const [detailId, setDetailId] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    setData(null);
+    api.get('/admin/monitoring/interactions' + buildQs({ ...filter, limit }))
+      .then(r => { if (active) setData(r.data); })
+      .catch(e => { if (active) setError(e.response?.data?.detail || e.message); });
+    return () => { active = false; };
+  }, [filter, limit]);
+
+  const apply = () => { setLimit(50); setFilter(draft); };
+  const reset = () => { const d = _blank(); setDraft(d); setLimit(50); setFilter(d); };
+  const rows = data?.interactions || [];
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Interaction Audit Trail {data && <span className="admin-muted">· {fmtNum(data.total)} in range</span>}</h4>
+      </div>
+      <p className="admin-muted">
+        Every chat turn with its retrieved KB context, prompt &amp; model version, response, latency and
+        feedback — click a row to inspect and reproduce an issue.
+      </p>
+      {error && <p className="admin-error">{error}</p>}
+      <div style={_filterBar}>
+        <FilterLabel label="From">
+          <input style={_fs} type="datetime-local" value={draft.date_from}
+            onChange={e => setDraft(d => ({ ...d, date_from: e.target.value }))} />
+        </FilterLabel>
+        <FilterLabel label="To">
+          <input style={_fs} type="datetime-local" value={draft.date_to}
+            onChange={e => setDraft(d => ({ ...d, date_to: e.target.value }))} />
+        </FilterLabel>
+        <FilterLabel label="User">
+          <input style={_fs} placeholder="partial match" value={draft.username}
+            onChange={e => setDraft(d => ({ ...d, username: e.target.value }))} />
+        </FilterLabel>
+        <FilterLabel label="Grounding">
+          <select style={_fs} value={draft.grounded}
+            onChange={e => setDraft(d => ({ ...d, grounded: e.target.value }))}>
+            <option value="">All</option>
+            <option value="true">Grounded (KB)</option>
+            <option value="false">Abstained</option>
+          </select>
+        </FilterLabel>
+        <FilterLabel label="Feedback">
+          <select style={_fs} value={draft.rating}
+            onChange={e => setDraft(d => ({ ...d, rating: e.target.value }))}>
+            <option value="">All</option>
+            <option value="1">👍 Positive</option>
+            <option value="-1">👎 Negative</option>
+          </select>
+        </FilterLabel>
+        <button className="admin-btn-primary" onClick={apply}>Apply</button>
+        <button className="admin-btn-ghost" onClick={reset}>Last 24h</button>
+      </div>
+      <table className="admin-table">
+        <thead><tr>
+          <th>Time</th><th>User</th><th>Query</th><th>Model</th>
+          <th>Prompt&nbsp;ver</th><th>RAG</th><th>Latency</th><th>Feedback</th>
+        </tr></thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => setDetailId(r.id)}>
+              <td className="admin-muted">{ago(r.created_at)}</td>
+              <td>{r.username}</td>
+              <td>{r.query}</td>
+              <td className="admin-muted">{r.model}</td>
+              <td className="admin-muted" style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{r.prompt_version || '—'}</td>
+              <td>{r.grounded
+                ? <span className="admin-pill ok">{fmtNum(r.rag_chunks)} chunks</span>
+                : <span className="admin-muted">—</span>}</td>
+              <td>{r.latency_ms != null ? `${fmtNum(r.latency_ms)} ms` : '—'}</td>
+              <td>{fbBadge(r.feedback_rating)}</td>
+            </tr>
+          ))}
+          {data && rows.length === 0 && <tr><td colSpan={8} className="admin-muted">No interactions recorded in this range.</td></tr>}
+          {!data && !error && <tr><td colSpan={8} className="admin-muted">Loading…</td></tr>}
+        </tbody>
+      </table>
+      {data && data.total > rows.length && (
+        <button className="admin-btn-ghost" onClick={() => setLimit(l => l + 50)}>
+          Load more ({fmtNum(rows.length)} of {fmtNum(data.total)})
+        </button>
+      )}
+      {detailId != null && <InteractionDetailModal id={detailId} onClose={() => setDetailId(null)} />}
+    </div>
+  );
+}
+
+function InteractionMeta({ label, value }) {
+  return (
+    <div className="mon-card">
+      <div className="mon-card-label">{label}</div>
+      <div className="mon-card-value" style={{ fontSize: '0.92rem', wordBreak: 'break-word' }}>{value}</div>
+    </div>
+  );
+}
+
+function InteractionSection({ title, children }) {
+  return (
+    <div style={{ marginTop: '0.9rem' }}>
+      <h4 style={{ margin: '0 0 0.3rem', fontSize: '0.85rem' }}>{title}</h4>
+      <pre style={{
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#0c1322',
+        border: '1px solid #2a3a55', borderRadius: 7, padding: '0.6rem',
+        fontSize: '0.78rem', maxHeight: 300, overflow: 'auto', margin: 0, color: '#e6ecf5',
+      }}>{children}</pre>
+    </div>
+  );
+}
+
+function InteractionDetailModal({ id, onClose }) {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    api.get(`/admin/monitoring/interactions/${id}`)
+      .then(r => { if (active) setD(r.data); })
+      .catch(e => { if (active) setError(e.response?.data?.detail || e.message); });
+    return () => { active = false; };
+  }, [id]);
+
+  const fb = (r) => (r === 1 ? '👍 positive' : r === -1 ? '👎 negative' : '—');
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <div className="admin-form mon-tasks-modal" onMouseDown={e => e.stopPropagation()}>
+        <div className="admin-form-header">
+          <h4>Interaction #{id}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          {error && <p className="admin-error">{error}</p>}
+          {!d && !error && <p className="admin-muted">Loading…</p>}
+          {d && (
+            <>
+              <div className="mon-cards">
+                <InteractionMeta label="When" value={ago(d.created_at)} />
+                <InteractionMeta label="User" value={d.username} />
+                <InteractionMeta label="Provider / Model" value={`${d.provider} / ${d.model}`} />
+                <InteractionMeta label="Prompt" value={`${d.prompt_key || '—'} · ${d.prompt_version || '—'}`} />
+                <InteractionMeta label="Tokens (in / out)" value={`${fmtNum(d.prompt_tokens)} / ${fmtNum(d.completion_tokens)}`} />
+                <InteractionMeta label="Latency" value={d.latency_ms != null ? `${fmtNum(d.latency_ms)} ms` : '—'} />
+                <InteractionMeta label="Grounded" value={d.grounded ? `yes · ${fmtNum(d.rag_chunks)} chunks` : 'no (abstained)'} />
+                <InteractionMeta label="Feedback" value={fb(d.feedback_rating)} />
+              </div>
+              <InteractionSection title="User Query">{d.query}</InteractionSection>
+              <InteractionSection title="Retrieved KB Context (RAG)">
+                {d.rag_context || '— no context (abstained or simple query) —'}
+              </InteractionSection>
+              <InteractionSection title="Generated Response">{d.response || '—'}</InteractionSection>
+              <p className="admin-muted" style={{ fontSize: '0.72rem', marginTop: '0.6rem' }}>
+                session #{d.session_id ?? '—'} · message #{d.message_id ?? '—'}
+              </p>
+            </>
           )}
         </div>
       </div>

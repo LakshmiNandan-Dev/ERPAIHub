@@ -12,6 +12,8 @@ built-in default.
 Agents that don't drive an LLM (cloning, patching — deterministic interview /
 simulation flows) intentionally have no entry here.
 """
+import hashlib
+
 from app.core import database
 from app import models
 
@@ -253,6 +255,30 @@ def get_prompt(key, **subs):
     except Exception:
         content = default
     return _apply(content, subs)
+
+
+def prompt_version(key) -> str:
+    """Short stable id for the *resolved* prompt currently in effect for ``key``
+    (admin override if set, else the built-in default). The hash changes whenever
+    the prompt text does, so an interaction can be tied to the exact prompt that
+    produced it — admin edits become visible as a new version. "" if unknown."""
+    d = _BY_KEY.get(key)
+    if not d:
+        return ""
+    content = d["default"]
+    try:
+        db = database.SessionLocal()
+        try:
+            row = db.query(models.AgentPrompt).filter(
+                models.AgentPrompt.prompt_key == key
+            ).first()
+            if row and (row.content or "").strip():
+                content = row.content
+        finally:
+            db.close()
+    except Exception:
+        content = d["default"]
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()[:12]
 
 
 def missing_placeholders(key, content):

@@ -856,6 +856,27 @@ async def stream_message(
                             grounded=bool(rag_context),
                             latency_ms=(time.monotonic() - _gen_t0) * 1000,
                         )
+                    # Durable interaction audit trail — the full query, retrieved
+                    # RAG context, prompt + model version, response, latency and
+                    # token usage, so any turn can be reproduced/inspected later.
+                    background_tasks.add_task(
+                        telemetry.record_interaction,
+                        user_id=current_user.id,
+                        username=current_user.username,
+                        session_id=session_id,
+                        message_id=assistant_message.id,
+                        query=message_data.content,
+                        response=assembled,
+                        rag_context=rag_context or None,
+                        rag_chunks=(rag_context.count("\n\n---\n\n") + 1) if rag_context else 0,
+                        grounded=bool(rag_context),
+                        provider=llm_provider,
+                        model=llm_model,
+                        prompt_key="chat.system",
+                        prompt_tokens=usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text),
+                        completion_tokens=usage.get("completion_tokens") or telemetry.est_tokens(assembled),
+                        latency_ms=(time.monotonic() - _gen_t0) * 1000,
+                    )
                 except Exception as save_err:
                     print(f"[Stream] Failed to save assistant message: {save_err}")
                 finally:

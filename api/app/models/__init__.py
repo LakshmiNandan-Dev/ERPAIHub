@@ -14,7 +14,7 @@ from app.models.chat import AgentStep, ChatSession, AgentRun, ChatMessage
 from app.models.rag import RagDocument
 from app.models.infra import SshServer, EbsEnvironment
 from app.models.dba import DeploymentRun, DeploymentStep, CloneRun, PatchRun
-from app.models.audit import AuditLog, UsageEvent
+from app.models.audit import AuditLog, UsageEvent, InteractionLog
 from app.models.settings import IntegrationCredential, SsoSettings, LlmCredential, AgentLlmPolicy, AgentPrompt
 from app.models.ml import TrainingExample, TrainingJob, AgentModel
 
@@ -31,7 +31,7 @@ __all__ = [
     # apps-DBA run records
     "DeploymentRun", "DeploymentStep", "CloneRun", "PatchRun",
     # audit / telemetry
-    "AuditLog", "UsageEvent",
+    "AuditLog", "UsageEvent", "InteractionLog",
     # admin-managed settings / credentials
     "IntegrationCredential", "SsoSettings", "LlmCredential", "AgentLlmPolicy", "AgentPrompt",
     # local-model fine-tuning
