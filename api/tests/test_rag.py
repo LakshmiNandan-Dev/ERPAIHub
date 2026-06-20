@@ -93,6 +93,34 @@ class TestDocumentUpload:
             r2 = client.delete(f"/rag/documents/{doc_id}", headers=admin_headers)
         assert r2.status_code == 204
 
+    def test_reindex_document(self, client, admin_headers):
+        """TC-RG-10: PUT replaces an existing document and re-indexes it."""
+        with patch("app.core.rag.rag_service.index_document", return_value=2):
+            r = client.post(
+                "/rag/documents",
+                files={"file": ("v1.txt", io.BytesIO(b"alpha beta"), "text/plain")},
+                headers=admin_headers,
+            )
+        doc_id = r.json()["id"]
+        with patch("app.core.rag.rag_service.index_document", return_value=3):
+            r2 = client.put(
+                f"/rag/documents/{doc_id}",
+                files={"file": ("v2.txt", io.BytesIO(b"alpha beta gamma delta"), "text/plain")},
+                headers=admin_headers,
+            )
+        assert r2.status_code == 200
+        assert r2.json()["status"] in ("ready", "indexing")
+
+    def test_reindex_missing_returns_404(self, client, admin_headers):
+        """TC-RG-11: Re-indexing a non-existent document returns 404."""
+        with patch("app.core.rag.rag_service.index_document", return_value=1):
+            r = client.put(
+                "/rag/documents/999999",
+                files={"file": ("x.txt", io.BytesIO(b"x"), "text/plain")},
+                headers=admin_headers,
+            )
+        assert r.status_code == 404
+
     def test_upload_requires_auth(self, client):
         """TC-SC-01: Unauthenticated upload returns 401."""
         r = client.post(
@@ -100,6 +128,67 @@ class TestDocumentUpload:
             files={"file": ("test.txt", io.BytesIO(b"test"), "text/plain")},
         )
         assert r.status_code == 401
+
+
+class TestIncrementalEmbedding:
+    """TC-RG-12: content-addressed delta indexing only re-embeds changed chunks."""
+
+    @staticmethod
+    def _fakes():
+        import numpy as np
+
+        class FakeCollection:
+            def __init__(self):
+                self.store = {}  # id -> (doc, meta)
+
+            def get(self, where=None, include=None):
+                did = where["doc_id"]
+                return {"ids": [i for i, (_d, m) in self.store.items()
+                                if m["doc_id"] == did]}
+
+            def delete(self, ids=None, where=None):
+                for i in (ids or []):
+                    self.store.pop(i, None)
+
+            def upsert(self, ids, embeddings, documents, metadatas):
+                for i, d, m in zip(ids, documents, metadatas):
+                    self.store[i] = (d, m)
+
+        class FakeModel:
+            def __init__(self):
+                self.encoded = []
+
+            def encode(self, texts):
+                self.encoded.extend(texts)
+                return np.zeros((len(texts), 3))
+
+        return FakeCollection(), FakeModel()
+
+    def test_only_changed_chunks_reembedded(self):
+        from app.core.rag import rag_service
+
+        col, model = self._fakes()
+        s1 = rag_service._incremental_upsert(
+            col, model, 1, ["aaa", "bbb", "ccc"], {"filename": "f"}, "doc")
+        assert s1 == {"total": 3, "added": 3, "deleted": 0, "unchanged": 0}
+        assert len(model.encoded) == 3  # cold start embeds everything
+
+        # Re-index: one chunk edited, two unchanged.
+        model.encoded.clear()
+        s2 = rag_service._incremental_upsert(
+            col, model, 1, ["aaa", "bbb", "CHANGED"], {"filename": "f"}, "doc")
+        assert s2 == {"total": 3, "added": 1, "deleted": 1, "unchanged": 2}
+        assert model.encoded == ["CHANGED"]  # ONLY the changed chunk re-embedded
+
+    def test_noop_reindex_embeds_nothing(self):
+        from app.core.rag import rag_service
+
+        col, model = self._fakes()
+        rag_service._incremental_upsert(col, model, 7, ["x", "y"], {"filename": "f"}, "doc")
+        model.encoded.clear()
+        stats = rag_service._incremental_upsert(col, model, 7, ["x", "y"], {"filename": "f"}, "doc")
+        assert stats == {"total": 2, "added": 0, "deleted": 0, "unchanged": 2}
+        assert model.encoded == []  # identical content → zero embedding work
 
 
 class TestRAGQuery:

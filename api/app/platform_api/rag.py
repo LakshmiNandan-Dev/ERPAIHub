@@ -109,6 +109,58 @@ async def upload_document(
     return doc_record
 
 
+@router.put("/documents/{doc_id}", response_model=schemas.RagDocumentOut)
+async def reindex_document(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Replace an existing document with an updated file and re-index it
+    *incrementally* — only chunks whose text actually changed are re-embedded
+    (see rag_service._incremental_upsert). This is the cheap path for documents
+    that change often; deleting and re-uploading would re-embed the whole file.
+    """
+    doc = db.query(models.RagDocument).filter(models.RagDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type '.{ext}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_FILE_SIZE_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {MAX_FILE_SIZE_MB}MB limit."
+        )
+
+    # No-op guard — identical bytes to what's already indexed for this doc.
+    content_hash = hashlib.sha256(file_bytes).hexdigest()
+    if doc.content_hash == content_hash and doc.status == "ready":
+        return doc
+
+    # Flip to indexing; the background delta does the embedding work.
+    doc.filename = file.filename
+    doc.file_type = ext
+    doc.content_hash = content_hash
+    doc.status = "indexing"
+    doc.error_message = None
+    db.commit()
+    db.refresh(doc)
+
+    background_tasks.add_task(
+        _do_index, file_bytes, file.filename, doc.id, database.SessionLocal
+    )
+    return doc
+
+
 @router.get("/documents", response_model=List[schemas.RagDocumentOut])
 def list_documents(
     db: Session = Depends(database.get_db),
