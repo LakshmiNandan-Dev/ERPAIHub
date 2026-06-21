@@ -5,12 +5,14 @@ import RagUpload from '../Rag/RagUpload';
 import DeploymentCenter from '../Deployment/DeploymentCenter';
 import PerformanceAgent from '../Performance/PerformanceAgent';
 import AdminConsole from '../Admin/AdminConsole';
+import MonitoringConsole from '../Monitoring/MonitoringConsole';
 import CloneCenter from '../Cloning/CloneCenter';
 import PatchCenter from '../Patching/PatchCenter';
+import HcmAgent from '../Functional/HcmAgent';
 import ReactMarkdown from 'react-markdown';
 import {
   BrainCircuit, MessageSquarePlus, Trash2, Settings2, LogOut,
-  Server, Globe, Bot, Cpu, Pencil, Check, X, ShieldCheck, KeyRound
+  Server, Globe, Bot, Cpu, Pencil, Check, X, ShieldCheck, KeyRound, Activity
 } from 'lucide-react';
 
 export default function ChatLayout({ setAuthToken }) {
@@ -30,7 +32,9 @@ export default function ChatLayout({ setAuthToken }) {
   const [showPerformance, setShowPerformance] = useState(false);
   const [showCloning, setShowCloning] = useState(false);
   const [showPatching, setShowPatching] = useState(false);
+  const [showHcm, setShowHcm] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showMonitoring, setShowMonitoring] = useState(false);
 
   // Change-password modal
   const [showChangePw, setShowChangePw] = useState(false);
@@ -115,7 +119,7 @@ export default function ChatLayout({ setAuthToken }) {
   const role = String(user.role || (user.is_admin ? 'admin' : 'user')).toLowerCase();
   const allowedAgents = new Set(user.allowed_agents || []);
   // Maps an agent-dropdown value to its backend gated-agent name.
-  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching' };
+  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching', hcm: 'hcm' };
   const canAgent = (name) => role === 'admin' || allowedAgents.has(name);
   const canInvokeAgents = role === 'admin' || allowedAgents.size > 0;
   const canAdminConsole = role === 'admin' || role === 'dba';
@@ -164,6 +168,8 @@ export default function ChatLayout({ setAuthToken }) {
       setShowCloning(true);
     } else if (val === 'patching') {
       setShowPatching(true);
+    } else if (val === 'hcm') {
+      setShowHcm(true);
     }
   };
 
@@ -550,6 +556,7 @@ export default function ChatLayout({ setAuthToken }) {
                 <option value="performance" disabled={!canAgent('performance')}>⚡ Performance Analyzer{canAgent('performance') ? '' : ' 🔒'}</option>
                 <option value="cloning" disabled={!canAgent('cloning')}>🧬 EBS Cloning Agent{canAgent('cloning') ? '' : ' 🔒'}</option>
                 <option value="patching" disabled={!canAgent('patching')}>🩹 EBS Patching Agent{canAgent('patching') ? '' : ' 🔒'}</option>
+                <option value="hcm" disabled={!canAgent('hcm')}>🧑‍💼 HCM &amp; Payroll Agent{canAgent('hcm') ? '' : ' 🔒'}</option>
                 <option value="finance" disabled>💸 Cash Management Agent (Soon)</option>
                 <option value="purchasing" disabled>🛒 Purchasing PO Agent (Soon)</option>
               </select>
@@ -580,6 +587,11 @@ export default function ChatLayout({ setAuthToken }) {
                 {canAdminConsole && (
                   <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowAdmin(true); }}>
                     <ShieldCheck size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Admin Console
+                  </button>
+                )}
+                {role === 'admin' && (
+                  <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowMonitoring(true); }}>
+                    <Activity size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Monitoring Console
                   </button>
                 )}
                 <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setSettingsTab('servers'); setShowSettingsModal(true); }}>
@@ -850,7 +862,11 @@ export default function ChatLayout({ setAuthToken }) {
       {showPatching && (
         <PatchCenter onClose={() => { setShowPatching(false); setActiveAgent('diagnostic'); }} />
       )}
+      {showHcm && (
+        <HcmAgent onClose={() => { setShowHcm(false); setActiveAgent('diagnostic'); }} />
+      )}
       {showAdmin && <AdminConsole onClose={() => setShowAdmin(false)} role={role} currentUser={user} />}
+      {showMonitoring && <MonitoringConsole onClose={() => setShowMonitoring(false)} />}
 
       {showChangePw && (
         <div className="settings-modal-overlay" onMouseDown={() => setShowChangePw(false)}>

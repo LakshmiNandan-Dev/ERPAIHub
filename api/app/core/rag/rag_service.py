@@ -332,7 +332,8 @@ def search_web_fallback(query: str, max_results: int = 3) -> str:
         return ""
 
 
-def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = True) -> str:
+def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = True,
+              metrics: dict = None) -> str:
     """
     Advanced retrieval: a wide embedding search (recall) is reranked by a
     cross-encoder (precision), and the top-N relevant chunks are returned as a
@@ -342,6 +343,11 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
 
     Falls back to legacy embedding-distance filtering when the reranker can't
     load, so behaviour degrades gracefully in air-gapped environments.
+
+    If a ``metrics`` dict is passed it is populated in place with per-retrieval
+    signals (top_k, top_score, avg_score, precision_at_k, returned) so the caller
+    can record them per interaction. Precision@k is the fraction of the top-k
+    reranked chunks clearing the relevance floor — computed for free here.
     """
     from app.core import telemetry   # lazy import avoids any import cycle
     _t0 = time.monotonic()
@@ -368,6 +374,8 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
     result_str = ""
     from_web = False
     top_score = None
+    avg_score = None
+    precision_at_k = None
     relevant = []
 
     if have_corpus:
@@ -382,12 +390,21 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         distances = results.get("distances", [[]])[0]
 
         # Stage 2 — precision: cross-encoder rerank, keep those above the floor.
+        ranked = []
         if RAG_RERANK_ENABLED:
             ranked = _rerank(query_text, docs)
             if ranked:
                 top_score = ranked[0][1]   # best candidate's cross-encoder score
                 relevant = [doc for doc, score in ranked[:n_results]
                             if score >= RAG_RERANK_MIN_SCORE]
+                # Retrieval precision@k + score stats straight from the rerank
+                # scores (free, deterministic): of the top-k candidates, how many
+                # cleared the relevance floor.
+                k = min(n_results, len(ranked))
+                topk_scores = [float(s) for _, s in ranked[:k]]
+                rel = [s for s in topk_scores if s >= RAG_RERANK_MIN_SCORE]
+                precision_at_k = round(100 * len(rel) / k) if k else None
+                avg_score = round(sum(topk_scores) / k, 2) if k else None
         if not relevant and not (RAG_RERANK_ENABLED and _get_reranker() is not None):
             # Reranker off or unavailable → legacy embedding-distance filter.
             relevant = [doc for doc, dist in zip(docs, distances)
@@ -409,10 +426,24 @@ def query_rag(query_text: str, n_results: int = 4, allow_web_fallback: bool = Tr
         except Exception:
             pass
 
+    # Surface per-retrieval metrics to the caller (for the interaction log).
+    if metrics is not None:
+        local = bool(result_str) and not from_web
+        metrics.update({
+            "top_k": n_results if have_corpus else None,
+            "returned": len(relevant),
+            "top_score": round(float(top_score), 2) if (local and top_score is not None) else None,
+            "avg_score": avg_score if local else None,
+            "precision_at_k": precision_at_k if local else None,
+            "from_web": from_web,
+        })
+
     telemetry.record_rag(
         hit=bool(result_str), cached=False, from_web=from_web,
         num_chunks=len(relevant),
         top_score=(top_score if (result_str and not from_web) else None),
+        precision=(precision_at_k if (result_str and not from_web) else None),
+        top_k=(n_results if (have_corpus and not from_web) else None),
         latency_ms=(time.monotonic() - _t0) * 1000,
     )
     return result_str

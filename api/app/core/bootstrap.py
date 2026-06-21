@@ -179,6 +179,12 @@ def ensure_schema_upgrades():
         "ON rag_documents (content_hash)",
         # Per-task output-token cap for the monitoring drill-down (added 2026-06).
         "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS token_limit INTEGER",
+        # Per-message automated quality scores on the interaction audit trail (added 2026-06).
+        "ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS accuracy_score INTEGER",
+        "ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS precision_score INTEGER",
+        # RAG retrieval signals per interaction (added 2026-06).
+        "ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS retrieval_top_k INTEGER",
+        "ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS retrieval_score DOUBLE PRECISION",
     ]
     for stmt in statements:
         try:

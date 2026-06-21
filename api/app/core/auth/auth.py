@@ -74,6 +74,7 @@ GATED_AGENTS = {
     "performance": "Performance Agent — diagnose and tune database performance.",
     "cloning":     "Cloning Agent — clone EBS environments (prod guard applies).",
     "patching":    "Patching Agent — run adop / OPatch (maker-checker gated).",
+    "hcm":         "HCM Functional Agent — read-only HR/Payroll inquiry & functional advice.",
 }
 
 

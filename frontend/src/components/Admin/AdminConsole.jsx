@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Activity, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare, ScrollText } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
 const TABS = [
-  { key: 'monitoring',   label: 'Monitoring',    icon: Activity,      roles: ['admin'] },
-  { key: 'interactions', label: 'Interactions',  icon: ScrollText,    roles: ['admin'] },
   { key: 'users',        label: 'Users',         icon: Users,         roles: ['admin', 'dba'] },
   { key: 'roles',        label: 'Roles',         icon: KeyRound,      roles: ['admin'] },
   { key: 'prompts',      label: 'Agent Prompts', icon: MessageSquare, roles: ['admin'] },
@@ -50,8 +48,6 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
         </div>
 
         <div className="admin-body">
-          {tab === 'monitoring' && <MonitoringTab />}
-          {tab === 'interactions' && <InteractionsTab />}
           {tab === 'users' && <UsersTab />}
           {tab === 'roles' && <RolesTab />}
           {tab === 'prompts' && <PromptsTab />}
@@ -1060,7 +1056,7 @@ function ago(ts) {
   return `${Math.floor(s / 3600)}h ago`;
 }
 
-function MonitoringTab() {
+export function MonitoringTab() {
   const [ov, setOv] = useState(null);
   const [users, setUsers] = useState([]);
   const [qual, setQual] = useState(null);
@@ -1275,7 +1271,7 @@ function fbBadge(r) {
   return <span className="admin-muted">—</span>;
 }
 
-function InteractionsTab() {
+export function InteractionsTab() {
   const _blank = () => ({ ..._last24h(), username: '', grounded: '', rating: '' });
   const [draft, setDraft] = useState(_blank);
   const [filter, setFilter] = useState(_blank);
@@ -1342,7 +1338,7 @@ function InteractionsTab() {
       <table className="admin-table">
         <thead><tr>
           <th>Time</th><th>User</th><th>Query</th><th>Model</th>
-          <th>Prompt&nbsp;ver</th><th>RAG</th><th>Latency</th><th>Feedback</th>
+          <th>Prompt&nbsp;ver</th><th title="returned chunks / top-k requested">RAG</th><th title="top reranked relevance score">Score</th><th title="LLM-judge factual correctness (0-100)">Acc</th><th title="Retrieval precision@k: top-k chunks clearing the relevance floor">Prec</th><th>Latency</th><th>Feedback</th>
         </tr></thead>
         <tbody>
           {rows.map(r => (
@@ -1353,14 +1349,17 @@ function InteractionsTab() {
               <td className="admin-muted">{r.model}</td>
               <td className="admin-muted" style={{ fontFamily: 'monospace', fontSize: '0.72rem' }}>{r.prompt_version || '—'}</td>
               <td>{r.grounded
-                ? <span className="admin-pill ok">{fmtNum(r.rag_chunks)} chunks</span>
+                ? <span className="admin-pill ok">{fmtNum(r.rag_chunks)}{r.retrieval_top_k ? `/${r.retrieval_top_k}` : ''}</span>
                 : <span className="admin-muted">—</span>}</td>
+              <td>{r.retrieval_score != null ? r.retrieval_score : <span className="admin-muted">—</span>}</td>
+              <td>{r.accuracy_score != null ? r.accuracy_score : <span className="admin-muted">—</span>}</td>
+              <td>{r.precision_score != null ? `${r.precision_score}%` : <span className="admin-muted">—</span>}</td>
               <td>{r.latency_ms != null ? `${fmtNum(r.latency_ms)} ms` : '—'}</td>
               <td>{fbBadge(r.feedback_rating)}</td>
             </tr>
           ))}
-          {data && rows.length === 0 && <tr><td colSpan={8} className="admin-muted">No interactions recorded in this range.</td></tr>}
-          {!data && !error && <tr><td colSpan={8} className="admin-muted">Loading…</td></tr>}
+          {data && rows.length === 0 && <tr><td colSpan={11} className="admin-muted">No interactions recorded in this range.</td></tr>}
+          {!data && !error && <tr><td colSpan={11} className="admin-muted">Loading…</td></tr>}
         </tbody>
       </table>
       {data && data.total > rows.length && (
@@ -1427,7 +1426,10 @@ function InteractionDetailModal({ id, onClose }) {
                 <InteractionMeta label="Prompt" value={`${d.prompt_key || '—'} · ${d.prompt_version || '—'}`} />
                 <InteractionMeta label="Tokens (in / out)" value={`${fmtNum(d.prompt_tokens)} / ${fmtNum(d.completion_tokens)}`} />
                 <InteractionMeta label="Latency" value={d.latency_ms != null ? `${fmtNum(d.latency_ms)} ms` : '—'} />
-                <InteractionMeta label="Grounded" value={d.grounded ? `yes · ${fmtNum(d.rag_chunks)} chunks` : 'no (abstained)'} />
+                <InteractionMeta label="Grounded" value={d.grounded ? `yes · ${fmtNum(d.rag_chunks)} of ${d.retrieval_top_k ?? '?'} (top-k)` : 'no (abstained)'} />
+                <InteractionMeta label="Top Score" value={d.retrieval_score != null ? d.retrieval_score : '—'} />
+                <InteractionMeta label="Precision@k (retrieval)" value={d.precision_score != null ? `${d.precision_score}%` : '—'} />
+                <InteractionMeta label="Accuracy (judge)" value={d.accuracy_score != null ? `${d.accuracy_score}/100` : '—'} />
                 <InteractionMeta label="Feedback" value={fb(d.feedback_rating)} />
               </div>
               <InteractionSection title="User Query">{d.query}</InteractionSection>
@@ -1453,6 +1455,8 @@ function RagPanel({ rag }) {
     { label: 'Retrievals', value: fmtNum(rag.queries), sub: `${fmtNum(rag.hits)} grounded · ${fmtNum(rag.misses)} abstained` },
     { label: 'Grounded Hit Rate', value: pct(rag.hit_rate), sub: 'queries that found KB context' },
     { label: 'Avg Relevance', value: num(rag.avg_relevance), sub: 'cross-encoder top score' },
+    { label: 'Avg Precision@k', value: rag.avg_precision == null ? '—' : `${rag.avg_precision}%`, sub: 'top-k chunks above the floor' },
+    { label: 'Avg Top-K', value: num(rag.avg_top_k), sub: 'results requested per query' },
     { label: 'Avg Chunks / Hit', value: num(rag.avg_chunks), sub: 'context passages injected' },
     { label: 'Cache Hit Rate', value: pct(rag.cache_hit_rate), sub: `${fmtNum(rag.cache_hits)} served from cache` },
     { label: 'Avg Retrieval', value: ms(rag.avg_retrieval_ms), sub: 'embed + rerank time' },
@@ -1489,9 +1493,21 @@ function RagPanel({ rag }) {
 
 function QualityPanel({ qual }) {
   const { rlaif: rl, feedback: fb, rlaif_recent: rlR, feedback_recent: fbR } = qual;
+  const acc = qual.accuracy || {};
+  const prec = qual.precision || {};
   const hrs = qual.recent_window_hours || 24;
 
   const cards = [
+    {
+      label: 'Answer Accuracy (Judge)',
+      value: acc.avg != null ? `${acc.avg}/100` : '—',
+      sub: `avg correctness over ${fmtNum(acc.graded)} graded answers`,
+    },
+    {
+      label: 'Retrieval Precision',
+      value: prec.avg != null ? `${prec.avg}%` : '—',
+      sub: `relevant ÷ retrieved chunks · ${fmtNum(prec.graded)} grounded`,
+    },
     {
       label: 'RAG Faithfulness (Automated)',
       value: pct(rl.pass_rate),
@@ -1575,7 +1591,17 @@ function QualityPanel({ qual }) {
 
 function buildQs(params) {
   const p = new URLSearchParams();
-  Object.entries(params).forEach(([k, v]) => { if (v) p.append(k, v); });
+  Object.entries(params).forEach(([k, v]) => {
+    if (!v) return;
+    // datetime-local inputs are in the browser's LOCAL time with no zone; the
+    // server stores timestamps in UTC and parses naive bounds as UTC. Convert to
+    // a UTC ISO string so the window matches regardless of the user's timezone.
+    if (k === 'date_from' || k === 'date_to') {
+      const d = new Date(v);
+      if (!isNaN(d)) v = d.toISOString();
+    }
+    p.append(k, v);
+  });
   const s = p.toString();
   return s ? `?${s}` : '';
 }
@@ -1595,6 +1621,9 @@ function downloadCsv(pathOrFn, filename) {
 const _fs = {
   background: '#0c1322', border: '1px solid #2a3a55', color: '#e6ecf5',
   borderRadius: 7, padding: '0.35rem 0.5rem', fontSize: '0.82rem',
+  // Render native form controls (the datetime picker / calendar icon) in dark
+  // mode so the indicator is light and visible on the dark input background.
+  colorScheme: 'dark',
 };
 const _filterBar = {
   display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'flex-end',

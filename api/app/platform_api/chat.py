@@ -5,7 +5,7 @@ import json
 import asyncio
 import time
 import re as _re
-from app.core import database, config_service, telemetry, prompts
+from app.core import database, config_service, telemetry, prompts, smalltalk
 from app import schemas, models
 from app.ml import rlaif_service
 from app.core.rag import rag_service
@@ -26,6 +26,10 @@ OLLAMA_URL = f"{_OLLAMA_BASE}/api/chat"
 # CPU-only inference where every generated token is slow. 0 = uncapped.
 CHAT_SIMPLE_MAX_TOKENS = int(os.getenv("CHAT_SIMPLE_MAX_TOKENS", "96"))
 CHAT_MAX_TOKENS = int(os.getenv("CHAT_MAX_TOKENS", "0"))  # cap for substantive turns; 0 = provider default
+# Fast-path model for trivial/simple turns (greetings, very short messages) on the
+# local Ollama provider, so "Hi" doesn't pay 7B inference latency. Set to a small
+# installed model (e.g. llama3.2:1b); empty = keep the requested model.
+CHAT_SIMPLE_MODEL = os.getenv("CHAT_SIMPLE_MODEL", "").strip()
 # Low sampling temperature for grounded answers — keeps the model anchored to the
 # retrieved context instead of confabulating. Tunable without a redeploy.
 CHAT_TEMPERATURE = float(os.getenv("CHAT_TEMPERATURE", "0.15"))
@@ -364,6 +368,12 @@ async def stream_message(
                         "yes", "no", "sure", "great", "got it", "understood"}
     )
 
+    # Speed: trivial turns (greetings, very short messages) don't need a heavy 7B
+    # model — route them to a lightweight local model so "Hi" responds fast.
+    # Only applies to local Ollama; substantive turns keep the requested model.
+    if is_simple_query and CHAT_SIMPLE_MODEL and llm_provider == "ollama":
+        llm_model = CHAT_SIMPLE_MODEL
+
     # 2.5a. LLM Guard — input scan (skipped for simple/short messages)
     if not is_simple_query:
         _guard_in = await asyncio.get_event_loop().run_in_executor(
@@ -639,14 +649,60 @@ async def stream_message(
     # Web fallback is disabled here: under strict grounding the context is treated
     # as authoritative, and unverified web snippets would be a hallucination source.
     rag_context = ""
+    rag_metrics = {}   # populated by query_rag: top_k, top_score, precision_at_k, ...
     if not is_simple_query:
         try:
-            rag_context = rag_service.query_rag(message_data.content, allow_web_fallback=False)
+            rag_context = rag_service.query_rag(
+                message_data.content, allow_web_fallback=False, metrics=rag_metrics)
         except Exception as e:
             print(f"[RAG] query_rag failed: {e}")
             rag_context = ""
 
     print(f"[RAG] skipped={is_simple_query} | context={bool(rag_context)} ({len(rag_context)} chars)")
+
+    # 5.4. Instant small-talk — greetings / thanks / acknowledgements are answered
+    # from a templated reply matched by the embedding model (no LLM call, ~ms).
+    # Skipped during a deploy/interview flow so a "yes"/"ok" answer isn't hijacked.
+    if is_simple_query and not is_deploy and not was_interviewing:
+        _canned = smalltalk.match(message_data.content)
+        if _canned:
+            async def smalltalk_stream():
+                _t0 = time.monotonic()
+                telemetry.stream_open(current_user.id)
+                # Persist the assistant turn so session history stays consistent.
+                new_db = database.SessionLocal()
+                mid = None
+                try:
+                    m = models.ChatMessage(
+                        session_id=session_id, role="assistant",
+                        content=_canned, agent_run_id=message_data.agent_run_id,
+                    )
+                    new_db.add(m); new_db.commit(); new_db.refresh(m); mid = m.id
+                except Exception as e:
+                    print(f"[Smalltalk] save failed: {e}"); new_db.rollback()
+                finally:
+                    new_db.close()
+
+                for word in _canned.split(" "):
+                    yield f"data: {json.dumps(word + ' ')}\n\n"
+                    await asyncio.sleep(0.004)
+                # No model tokens consumed — record the turn truthfully.
+                background_tasks.add_task(
+                    telemetry.record_interaction,
+                    user_id=current_user.id, username=current_user.username,
+                    session_id=session_id, message_id=mid,
+                    query=message_data.content, response=_canned,
+                    grounded=False, provider="smalltalk", model="intent-classifier",
+                    prompt_key="chat.system",
+                    latency_ms=(time.monotonic() - _t0) * 1000,
+                )
+                telemetry.stream_close(current_user.id)
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                smalltalk_stream(), media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
     # 5.5. Semantic cache — only safe for standalone, context-free questions:
     # the first turn of a session (no prior conversation the answer depends on),
@@ -820,7 +876,34 @@ async def stream_message(
                             message_data.content, assembled, llm_provider, llm_model
                         )
 
-                    # Trigger background RLAIF Audit — only for substantive queries
+                    # Durable interaction audit trail — recorded FIRST so the row
+                    # exists before the RLAIF audit (next) fills in its accuracy
+                    # score. Captures the query, retrieved RAG context, prompt +
+                    # model version, response, latency, token usage, and the
+                    # retrieval signals (top-k, top rerank score, precision@k).
+                    background_tasks.add_task(
+                        telemetry.record_interaction,
+                        user_id=current_user.id,
+                        username=current_user.username,
+                        session_id=session_id,
+                        message_id=assistant_message.id,
+                        query=message_data.content,
+                        response=assembled,
+                        rag_context=rag_context or None,
+                        rag_chunks=(rag_context.count("\n\n---\n\n") + 1) if rag_context else 0,
+                        grounded=bool(rag_context),
+                        provider=llm_provider,
+                        model=llm_model,
+                        prompt_key="chat.system",
+                        prompt_tokens=usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text),
+                        completion_tokens=usage.get("completion_tokens") or telemetry.est_tokens(assembled),
+                        latency_ms=(time.monotonic() - _gen_t0) * 1000,
+                        retrieval_top_k=rag_metrics.get("top_k"),
+                        retrieval_score=rag_metrics.get("top_score"),
+                        precision=rag_metrics.get("precision_at_k"),
+                    )
+                    # Trigger background RLAIF Audit — substantive queries only.
+                    # Runs after record_interaction so it can update the row's accuracy.
                     if not is_simple_query:
                         background_tasks.add_task(
                             rlaif_service.audit_message_rlaif,
@@ -856,27 +939,6 @@ async def stream_message(
                             grounded=bool(rag_context),
                             latency_ms=(time.monotonic() - _gen_t0) * 1000,
                         )
-                    # Durable interaction audit trail — the full query, retrieved
-                    # RAG context, prompt + model version, response, latency and
-                    # token usage, so any turn can be reproduced/inspected later.
-                    background_tasks.add_task(
-                        telemetry.record_interaction,
-                        user_id=current_user.id,
-                        username=current_user.username,
-                        session_id=session_id,
-                        message_id=assistant_message.id,
-                        query=message_data.content,
-                        response=assembled,
-                        rag_context=rag_context or None,
-                        rag_chunks=(rag_context.count("\n\n---\n\n") + 1) if rag_context else 0,
-                        grounded=bool(rag_context),
-                        provider=llm_provider,
-                        model=llm_model,
-                        prompt_key="chat.system",
-                        prompt_tokens=usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text),
-                        completion_tokens=usage.get("completion_tokens") or telemetry.est_tokens(assembled),
-                        latency_ms=(time.monotonic() - _gen_t0) * 1000,
-                    )
                 except Exception as save_err:
                     print(f"[Stream] Failed to save assistant message: {save_err}")
                 finally:
