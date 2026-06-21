@@ -12,6 +12,7 @@ from app.modules.dba.deployment import deployments, deployment_agent
 from app.modules.dba.performance import performance_agent
 from app.modules.dba.cloning import cloning
 from app.modules.dba.patching import patching
+from app.modules.functional.hcm import hcm_agent
 
 # Provision the schema and seed first-run data (admin, default LLM provider).
 run_bootstrap()
@@ -47,6 +48,7 @@ app.include_router(cloning.router)
 app.include_router(audit.router)
 app.include_router(training.router)
 app.include_router(patching.router)
+app.include_router(hcm_agent.router)
 
 
 @app.get("/")

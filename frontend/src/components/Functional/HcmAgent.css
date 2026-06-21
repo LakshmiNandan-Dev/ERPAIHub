@@ -1,0 +1,104 @@
+/* HCM Functional Agent — small additions on top of the reused PerformanceAgent.css */
+
+.hcm-ro-pill {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.12rem 0.4rem;
+  margin-left: 0.5rem;
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+  vertical-align: middle;
+}
+
+.hcm-input {
+  width: 100%;
+  background: #0c1322;
+  border: 1px solid #2a3a55;
+  color: #e6ecf5;
+  border-radius: 7px;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.84rem;
+  box-sizing: border-box;
+}
+
+.hcm-input:focus {
+  outline: none;
+  border-color: #60a5fa;
+}
+
+.hcm-textarea {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.hcm-inquiry-desc {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-top: 0.35rem;
+  line-height: 1.35;
+}
+
+.hcm-note {
+  font-size: 0.74rem;
+  color: #94a3b8;
+  padding: 0.3rem 0;
+  line-height: 1.35;
+}
+
+.hcm-results {
+  margin-top: 0.4rem;
+}
+
+.hcm-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin-bottom: 0.35rem;
+}
+
+.hcm-source-badge {
+  font-size: 0.64rem;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+}
+
+.hcm-source-badge.live {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
+
+.hcm-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #1e293b;
+  border-radius: 7px;
+}
+
+.hcm-table-wrap .perf-metric-table {
+  margin: 0;
+}
+
+.hcm-table-wrap .perf-metric-table th {
+  position: sticky;
+  top: 0;
+  background: #0c1322;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.hcm-table-wrap .perf-metric-table td {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

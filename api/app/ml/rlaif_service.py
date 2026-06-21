@@ -1,6 +1,6 @@
 import re
 from typing import Optional
-from app.core import database
+from app.core import database, telemetry
 from app import models
 from app.core.llm import llm_service
 
@@ -17,7 +17,9 @@ def audit_message_rlaif(
 ):
     """
     RLAIF audit — critiques the assistant response and stores score/reasoning in DB.
-    Uses the same LLM provider the user has configured.
+    Also produces an LLM-judge **accuracy** score (0-100 correctness) written to the
+    interaction audit trail. (Retrieval precision@k is captured separately, for free,
+    at retrieval time — see rag_service.query_rag.) Uses the configured LLM provider.
     """
     if not rag_context:
         rag_context = "No specific reference document was uploaded for this query."
@@ -36,8 +38,10 @@ def audit_message_rlaif(
         "or conflicting with the Verified Context? (i.e. hallucination?)\n"
         "2. Correctness: Are the Oracle EBS SQL scripts, configurations, or commands accurate?\n"
         "3. Helpfulness: Did the response correctly and safely answer the user query?\n\n"
+        "Also score accuracy: an integer 0-100 for how factually correct the Oracle EBS facts, "
+        "SQL and commands are.\n"
         "You must output ONLY a valid JSON object (no markdown, no extra text):\n"
-        '{"score": 1 or -1, "reasoning": "...", "suggested_correction": "..."}'
+        '{"score": 1 or -1, "accuracy": 0-100, "reasoning": "...", "suggested_correction": "..."}'
     )
 
     try:
@@ -66,6 +70,14 @@ def audit_message_rlaif(
         except (ValueError, TypeError):
             score_val = 1
 
+        # Judge accuracy (0-100). Retrieval precision is captured at query time.
+        accuracy = None
+        try:
+            if eval_data.get("accuracy") is not None:
+                accuracy = max(0, min(100, int(eval_data["accuracy"])))
+        except (ValueError, TypeError):
+            accuracy = None
+
         db = database.SessionLocal()
         try:
             msg = db.query(models.ChatMessage).filter(models.ChatMessage.id == message_id).first()
@@ -74,11 +86,14 @@ def audit_message_rlaif(
                 msg.rlaif_critique = reasoning
                 msg.rlaif_correction = correction or None
                 db.commit()
-                print(f"[RLAIF] Msg #{message_id} score={score_val}")
+                print(f"[RLAIF] Msg #{message_id} score={score_val} accuracy={accuracy}")
         except Exception as e:
             print(f"[RLAIF] DB update error: {e}")
         finally:
             db.close()
+
+        # Denormalize the accuracy score onto the interaction audit trail (best-effort).
+        telemetry.update_interaction_scores(message_id, accuracy=accuracy)
 
     except Exception as e:
         print(f"[RLAIF] Audit failed: {e}")

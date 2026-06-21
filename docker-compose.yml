@@ -108,6 +108,9 @@ services:
       # snappy on CPU inference; 0 = uncapped / provider default for the rest.
       CHAT_SIMPLE_MAX_TOKENS: ${CHAT_SIMPLE_MAX_TOKENS:-96}
       CHAT_MAX_TOKENS: ${CHAT_MAX_TOKENS:-0}
+      # Fast-path model for trivial/simple Ollama turns (greetings, short messages)
+      # so "Hi" doesn't pay 7B latency. Empty = keep the requested model.
+      CHAT_SIMPLE_MODEL: ${CHAT_SIMPLE_MODEL:-llama3.2:1b}
       # Auto-curate user feedback into training examples on submit. Optionally
       # queue a DRAFT training job every N new examples (0 = assemble only).
       # Model registration/activation always stay manual (human review gate).

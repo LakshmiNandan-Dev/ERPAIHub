@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, TIMESTAMP, Text
+from sqlalchemy import Column, Integer, Float, String, Boolean, ForeignKey, TIMESTAMP, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.expression import text
 from sqlalchemy.orm import relationship
@@ -68,8 +68,11 @@ class InteractionLog(Base):
     query = Column(Text, nullable=False)                  # the user's question
     response = Column(Text, nullable=True)                # the generated answer
     rag_context = Column(Text, nullable=True)             # retrieved documents (grounding)
-    rag_chunks = Column(Integer, nullable=False, server_default='0')
+    rag_chunks = Column(Integer, nullable=False, server_default='0')  # chunks returned
     grounded = Column(Boolean, nullable=False, server_default=text('false'))
+    # Retrieval signals captured for free from the cross-encoder rerank (see rag_service.query_rag):
+    retrieval_top_k = Column(Integer, nullable=True)      # k requested
+    retrieval_score = Column(Float, nullable=True)        # top reranked relevance score
     provider = Column(String(50), nullable=True)
     model = Column(String(150), nullable=True)            # model version
     prompt_key = Column(String(100), nullable=True)       # registry key in effect
@@ -79,4 +82,7 @@ class InteractionLog(Base):
     total_tokens = Column(Integer, nullable=False, server_default='0')
     latency_ms = Column(Integer, nullable=True)
     feedback_rating = Column(Integer, nullable=True)      # +1/-1, denormalized from the message
+    # Per-message quality scores:
+    accuracy_score = Column(Integer, nullable=True)       # LLM-judge factual correctness 0-100 (RLAIF audit)
+    precision_score = Column(Integer, nullable=True)      # retrieval precision@k %: top-k chunks clearing the relevance floor (null when not grounded)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'), index=True)

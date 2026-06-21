@@ -54,10 +54,23 @@ class TestInteractionLog:
         r = client.get("/admin/monitoring/interactions/99999999", headers=admin_headers)
         assert r.status_code == 404
 
-    def test_requires_admin(self, client, regular_user_headers):
+    def test_requires_admin(self, db_session, client):
         """TC-IL-04: a non-admin cannot read the audit trail."""
-        r = client.get("/admin/monitoring/interactions", headers=regular_user_headers)
-        assert r.status_code in (401, 403)
+        from app.common import utils
+        u = models.User(username="il_nonadmin", email="il_nonadmin@test.com",
+                        password_hash=utils.hash_password("x"), is_admin=False,
+                        is_active=True, approval_status="approved")
+        db_session.add(u)
+        db_session.commit()
+        tok = utils.create_session_token()
+        db_session.add(models.UserSession(
+            user_id=u.id, session_token=tok,
+            expires_at=utils.get_session_expiration(hours=1)))
+        db_session.commit()
+
+        r = client.get("/admin/monitoring/interactions",
+                       headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 403
 
     def test_grounded_filter(self, db_session, client, admin_headers):
         """TC-IL-05: grounded=true returns only grounded interactions."""
@@ -67,6 +80,31 @@ class TestInteractionLog:
         assert r.status_code == 200
         items = r.json()["interactions"]
         assert items and all(i["grounded"] for i in items)
+
+    def test_scores_denormalized_and_aggregated(self, db_session, client, admin_headers):
+        """TC-IL-07: retrieval signals (top-k, score, precision@k) are stored at
+        record time and the judge accuracy is filled in later; both roll up in
+        the /quality aggregate."""
+        from app.core import telemetry
+        from conftest import chat_session
+        session_id = chat_session(client, admin_headers)
+        msg = models.ChatMessage(session_id=session_id, role="assistant", content="ans")
+        db_session.add(msg)
+        db_session.commit()
+
+        # Retrieval-time signals (precision@k from the reranker) on the row...
+        _record(message_id=msg.id, query="q", session_id=session_id, grounded=True,
+                rag_chunks=4, retrieval_top_k=4, retrieval_score=5.3, precision=75)
+        # ...and the RLAIF judge fills in accuracy afterwards.
+        telemetry.update_interaction_scores(msg.id, accuracy=88)
+
+        lst = client.get("/admin/monitoring/interactions", headers=admin_headers).json()
+        row = next(i for i in lst["interactions"] if i["message_id"] == msg.id)
+        assert row["precision_score"] == 75 and row["accuracy_score"] == 88
+        assert row["retrieval_top_k"] == 4 and row["retrieval_score"] == 5.3
+
+        q = client.get("/admin/monitoring/quality", headers=admin_headers).json()
+        assert q["accuracy"]["avg"] is not None and q["precision"]["avg"] is not None
 
     def test_feedback_syncs_onto_log(self, db_session, client, admin_headers):
         """TC-IL-06: feedback is denormalized onto the interaction-audit row."""

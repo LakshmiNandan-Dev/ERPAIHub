@@ -37,6 +37,10 @@ K_RAG_WEB = "tlm:rag:web"            # grounded via web fallback
 K_RAG_CHUNKS = "tlm:rag:chunks_sum"  # Σ chunks returned (for avg over hits)
 K_RAG_SCORE_SUM = "tlm:rag:score_sum"  # Σ top rerank score (hits only)
 K_RAG_SCORE_CNT = "tlm:rag:score_cnt"
+K_RAG_PREC_SUM = "tlm:rag:prec_sum"    # Σ retrieval precision@k (hits only)
+K_RAG_PREC_CNT = "tlm:rag:prec_cnt"
+K_RAG_TOPK_SUM = "tlm:rag:topk_sum"    # Σ top-k requested
+K_RAG_TOPK_CNT = "tlm:rag:topk_cnt"
 K_RAG_LAT_SUM = "tlm:rag:lat_ms_sum"   # Σ retrieval latency (ms)
 K_RAG_LAT_CNT = "tlm:rag:lat_cnt"
 # RAG-grounded generation metrics (substantive chat turns only)
@@ -139,9 +143,11 @@ def record_llm(user_id, username, endpoint, provider, model,
         pass
 
 
-def record_rag(hit, cached=False, from_web=False, num_chunks=0, top_score=None, latency_ms=None):
+def record_rag(hit, cached=False, from_web=False, num_chunks=0, top_score=None,
+               precision=None, top_k=None, latency_ms=None):
     """Capture one RAG retrieval for the monitoring RAG panel. ``hit`` = context
-    was returned (vs. a confident miss that makes the model abstain)."""
+    was returned (vs. a confident miss that makes the model abstain). ``precision``
+    is retrieval precision@k (%), ``top_k`` the requested result count."""
     try:
         r = _r()
         pipe = r.pipeline()
@@ -152,6 +158,12 @@ def record_rag(hit, cached=False, from_web=False, num_chunks=0, top_score=None, 
             if top_score is not None:
                 pipe.incrbyfloat(K_RAG_SCORE_SUM, float(top_score))
                 pipe.incr(K_RAG_SCORE_CNT)
+            if precision is not None:
+                pipe.incrbyfloat(K_RAG_PREC_SUM, float(precision))
+                pipe.incr(K_RAG_PREC_CNT)
+        if top_k is not None:
+            pipe.incrby(K_RAG_TOPK_SUM, int(top_k))
+            pipe.incr(K_RAG_TOPK_CNT)
         if cached:
             pipe.incr(K_RAG_CACHE)
         if from_web:
@@ -168,10 +180,13 @@ def record_interaction(*, user_id=None, username=None, session_id=None,
                        message_id=None, query="", response=None, rag_context=None,
                        rag_chunks=0, grounded=False, provider=None, model=None,
                        prompt_key=None, prompt_tokens=0, completion_tokens=0,
-                       latency_ms=None):
+                       latency_ms=None, retrieval_top_k=None, retrieval_score=None,
+                       precision=None):
     """Append one durable interaction-audit row capturing the full request: the
-    query, retrieved RAG context, prompt + model version, response, latency and
-    token usage. Best-effort — never raises, so it can't break a chat turn."""
+    query, retrieved RAG context, prompt + model version, response, latency,
+    token usage and the retrieval signals (top-k, top score, precision@k). The
+    answer-accuracy score is filled in later by the RLAIF audit. Best-effort —
+    never raises, so it can't break a chat turn."""
     try:
         version = None
         if prompt_key:
@@ -181,6 +196,7 @@ def record_interaction(*, user_id=None, username=None, session_id=None,
             except Exception:
                 version = None
         pt, ct = int(prompt_tokens or 0), int(completion_tokens or 0)
+        prec = max(0, min(100, int(precision))) if precision is not None else None
         db = database.SessionLocal()
         try:
             db.add(models.InteractionLog(
@@ -191,6 +207,9 @@ def record_interaction(*, user_id=None, username=None, session_id=None,
                 prompt_key=prompt_key, prompt_version=version,
                 prompt_tokens=pt, completion_tokens=ct, total_tokens=pt + ct,
                 latency_ms=int(latency_ms) if latency_ms is not None else None,
+                retrieval_top_k=int(retrieval_top_k) if retrieval_top_k is not None else None,
+                retrieval_score=float(retrieval_score) if retrieval_score is not None else None,
+                precision_score=prec,
             ))
             db.commit()
         finally:
@@ -210,6 +229,32 @@ def update_interaction_feedback(message_id, rating):
             db.query(models.InteractionLog).filter(
                 models.InteractionLog.message_id == message_id
             ).update({"feedback_rating": rating})
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
+def update_interaction_scores(message_id, accuracy=None, precision=None):
+    """Denormalize the automated per-message quality scores (judge accuracy 0-100,
+    retrieval precision %) onto the interaction-audit row. Written by the RLAIF
+    audit. Best-effort; null scores are skipped."""
+    if not message_id:
+        return
+    vals = {}
+    if accuracy is not None:
+        vals["accuracy_score"] = max(0, min(100, int(accuracy)))
+    if precision is not None:
+        vals["precision_score"] = max(0, min(100, int(precision)))
+    if not vals:
+        return
+    try:
+        db = database.SessionLocal()
+        try:
+            db.query(models.InteractionLog).filter(
+                models.InteractionLog.message_id == message_id
+            ).update(vals)
             db.commit()
         finally:
             db.close()
@@ -445,9 +490,11 @@ def _rate(positive, total):
 def get_quality(recent_hours: int = 24):
     empty_rl = {"total": 0, "passed": 0, "failed": 0, "pass_rate": None}
     empty_fb = {"total": 0, "positive": 0, "negative": 0, "positive_rate": None}
+    empty_sc = {"avg": None, "graded": 0, "avg_recent": None}
     out = {
         "rlaif": dict(empty_rl), "feedback": dict(empty_fb),
         "rlaif_recent": dict(empty_rl), "feedback_recent": dict(empty_fb),
+        "accuracy": dict(empty_sc), "precision": dict(empty_sc),
         "recent_window_hours": recent_hours, "flags": [],
     }
     try:
@@ -475,6 +522,25 @@ def get_quality(recent_hours: int = 24):
             out["rlaif"], out["feedback"] = agg()
             since = datetime.now(timezone.utc) - timedelta(hours=recent_hours)
             out["rlaif_recent"], out["feedback_recent"] = agg(since)
+
+            # Per-message automated scores from the interaction audit trail:
+            #   accuracy  = LLM-judge correctness (0-100), graded on every audited turn
+            #   precision = retrieval precision % (relevant / retrieved chunks), grounded turns only
+            I = models.InteractionLog
+
+            def score_stats(col, since=None):
+                q = db.query(func.avg(col), func.count(col))
+                if since is not None:
+                    q = q.filter(I.created_at >= since)
+                avg, cnt = q.one()
+                return (round(float(avg), 1) if avg is not None else None), _int(cnt)
+
+            acc_avg, acc_cnt = score_stats(I.accuracy_score)
+            prec_avg, prec_cnt = score_stats(I.precision_score)
+            out["accuracy"] = {"avg": acc_avg, "graded": acc_cnt,
+                               "avg_recent": score_stats(I.accuracy_score, since)[0]}
+            out["precision"] = {"avg": prec_avg, "graded": prec_cnt,
+                                "avg_recent": score_stats(I.precision_score, since)[0]}
 
             flags = (
                 db.query(M.id, M.rlaif_critique, M.created_at)
@@ -507,6 +573,7 @@ def get_rag():
         "queries": 0, "hits": 0, "misses": 0, "hit_rate": None,
         "cache_hits": 0, "cache_hit_rate": None, "web_fallbacks": 0,
         "avg_chunks": None, "avg_relevance": None, "avg_retrieval_ms": None,
+        "avg_precision": None, "avg_top_k": None,
         "generations": 0, "grounded": 0, "grounded_rate": None, "avg_generation_ms": None,
     }
     try:
@@ -522,6 +589,10 @@ def get_rag():
         out["avg_chunks"] = round(_int(r.get(K_RAG_CHUNKS)) / hit, 1) if hit else None
         sc_cnt = _int(r.get(K_RAG_SCORE_CNT))
         out["avg_relevance"] = round(_flt(r.get(K_RAG_SCORE_SUM)) / sc_cnt, 2) if sc_cnt else None
+        pr_cnt = _int(r.get(K_RAG_PREC_CNT))
+        out["avg_precision"] = round(_flt(r.get(K_RAG_PREC_SUM)) / pr_cnt, 1) if pr_cnt else None
+        tk_cnt = _int(r.get(K_RAG_TOPK_CNT))
+        out["avg_top_k"] = round(_flt(r.get(K_RAG_TOPK_SUM)) / tk_cnt, 1) if tk_cnt else None
         lat_cnt = _int(r.get(K_RAG_LAT_CNT))
         out["avg_retrieval_ms"] = round(_flt(r.get(K_RAG_LAT_SUM)) / lat_cnt) if lat_cnt else None
         gen, grounded = _int(r.get(K_GEN_CNT)), _int(r.get(K_GEN_GROUNDED))
@@ -553,6 +624,8 @@ def _interaction_row(r, truncate=True):
         "rag_context": (None if truncate else r.rag_context),
         "rag_chunks": _int(r.rag_chunks),
         "grounded": bool(r.grounded),
+        "retrieval_top_k": r.retrieval_top_k,
+        "retrieval_score": (round(r.retrieval_score, 2) if r.retrieval_score is not None else None),
         "provider": r.provider or "—",
         "model": r.model or "—",
         "prompt_key": r.prompt_key,
@@ -562,6 +635,8 @@ def _interaction_row(r, truncate=True):
         "total_tokens": _int(r.total_tokens),
         "latency_ms": r.latency_ms,
         "feedback_rating": r.feedback_rating,
+        "accuracy_score": r.accuracy_score,
+        "precision_score": r.precision_score,
     }
 
 
