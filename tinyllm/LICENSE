@@ -1,14 +1,14 @@
-Oracle ERP AI Hub (ERPAIHub) — Proprietary Software License
+TinyLLM — Proprietary Software License
 Copyright (c) 2026 Nagendra Palla. All rights reserved.
 
-The contents of this repository (the "Software"), including the bundled TinyLLM
-NL->SQL component, are proprietary to and remain the exclusive property of the
-copyright holder ("Licensor"). This is NOT open-source software, and no
-open-source license is granted. (This supersedes any prior license.)
+The contents of this repository (the "Software") are made publicly visible for
+evaluation and reference only. The Software is proprietary to and remains the
+exclusive property of the copyright holder ("Licensor"). This is NOT open-source
+software, and no open-source license is granted.
 
 1. LIMITED GRANT.
    Subject to this License, you are granted a limited, non-exclusive,
-   non-transferable, revocable right to view and read the source in this
+   non-transferable, revocable right to view and read the source code in this
    repository solely for personal evaluation and reference.
 
 2. RESTRICTIONS.
@@ -17,7 +17,8 @@ open-source license is granted. (This supersedes any prior license.)
    (a) use, run, execute, or deploy the Software, in whole or in part, for any
        purpose — including evaluation against your own data, development,
        internal, production, or commercial use;
-   (b) copy, reproduce, modify, adapt, translate, or create derivative works;
+   (b) copy, reproduce, modify, adapt, translate, or create derivative works of
+       the Software;
    (c) distribute, publish, sublicense, sell, rent, lease, lend, or otherwise
        transfer the Software or any portion of it;
    (d) use the Software, its design, or its methods to build or assist in
@@ -35,10 +36,10 @@ open-source license is granted. (This supersedes any prior license.)
    Licensor at: palla.nagendra@gmail.com.
 
 5. TRADEMARKS.
-   "ERPAIHub", "TinyLLM", and associated marks are the Licensor's. "Oracle",
-   "Oracle E-Business Suite", and "Oracle EBS" are trademarks of Oracle
-   Corporation, used here for nominative, descriptive purposes only. This project
-   is not affiliated with, endorsed by, or sponsored by Oracle Corporation.
+   "TinyLLM" and associated marks are the Licensor's. "Oracle", "Oracle
+   E-Business Suite", and "Oracle EBS" are trademarks of Oracle Corporation,
+   used here for nominative, descriptive purposes only. This project is not
+   affiliated with, endorsed by, or sponsored by Oracle Corporation.
 
 6. NO WARRANTY.
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -56,7 +57,5 @@ open-source license is granted. (This supersedes any prior license.)
 
 -------------------------------------------------------------------------------
 This text is a template provided for convenience and is not legal advice. Have
-qualified legal counsel review and adapt it before relying on it. NOTE: this
-repository was previously offered under the MIT License; the switch to a
-proprietary license applies going forward and does not retroactively revoke
-rights already granted for prior published versions — confirm with counsel.
+qualified legal counsel review and adapt it (licensor entity, jurisdiction,
+governing law, scope) before relying on it.

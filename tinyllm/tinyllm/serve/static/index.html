@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyLLM — NL → Oracle SQL</title>
+<style>
+  :root { --red:#c74034; --slate:#3a4655; --bg:#f4f5f7; --line:#dfe3e8; --ok:#1f7a3d;
+          --bad:#b3261e; --muted:#6b6b6b; --card:#fff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         color:#1b1b1b; background:var(--bg); }
+  header { background:var(--slate); color:#fff; padding:13px 22px; display:flex;
+           justify-content:space-between; align-items:center; position:sticky; top:0; z-index:5; }
+  header h1 { margin:0; font-size:17px; font-weight:600; }
+  header h1 span { color:#c7ccd4; font-size:13px; font-weight:400; }
+  header .meta { font-size:12px; color:#c7ccd4; }
+  main { max-width:900px; margin:20px auto; padding:0 18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .composer { position:sticky; top:54px; z-index:4; margin-bottom:18px; box-shadow:0 2px 8px rgba(0,0,0,.04); }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
+  select,textarea { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:7px;
+                    font:inherit; background:#fff; }
+  textarea { resize:vertical; min-height:54px; }
+  .row { display:flex; gap:12px; align-items:flex-end; }
+  .row > div:first-child { width:240px; }
+  .row > div:nth-child(2) { flex:1; }
+  button { background:var(--red); color:#fff; border:0; border-radius:7px; padding:10px 16px;
+           font:inherit; font-weight:600; cursor:pointer; white-space:nowrap; }
+  button:disabled { background:#c9ccd1; cursor:not-allowed; }
+  button.secondary { background:var(--slate); }
+  button.small { padding:7px 13px; font-size:13px; }
+  .entry { margin-bottom:16px; }
+  .entry .qline { display:flex; justify-content:space-between; gap:10px; margin-bottom:10px; }
+  .entry .q { font-weight:600; }
+  .entry .when { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .entry .schemaTag { color:var(--muted); font-size:12px; }
+  pre { background:#0f1320; color:#e6e6e6; padding:13px; border-radius:8px; overflow-x:auto; margin:0;
+        font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .badge { font-size:12px; padding:3px 9px; border-radius:20px; border:1px solid var(--line); }
+  .badge.ok { background:#e7f4ec; color:var(--ok); border-color:#bfe3cd; }
+  .badge.bad { background:#fdeceb; color:var(--bad); border-color:#f5c4c0; }
+  .badge.na { background:#eef0f3; color:var(--muted); }
+  .note { color:var(--bad); font-size:13px; margin:6px 0; }
+  .muted { color:var(--muted); font-size:13px; }
+  .confirm { background:#fff8e6; border:1px solid #f0dca0; border-radius:8px; padding:11px; margin-top:10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; }
+  th,td { border:1px solid var(--line); padding:6px 9px; text-align:left; }
+  th { background:#f0f2f5; }
+  .empty { color:var(--muted); text-align:center; padding:30px; }
+  .spin { display:inline-block; width:14px; height:14px; border:2px solid #fff; border-top-color:transparent;
+          border-radius:50%; animation:s .7s linear infinite; vertical-align:-2px; margin-right:6px; }
+  @keyframes s { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>TinyLLM <span>· natural language → Oracle EBS SQL</span></h1>
+  <div><a href="/setup" style="color:#c7ccd4;font-size:13px;text-decoration:none;margin-right:14px">⚙ Setup</a>
+       <span class="meta" id="meta"></span></div>
+</header>
+<main>
+  <div class="card composer">
+    <div class="row">
+      <div>
+        <label for="schema">Schema</label>
+        <select id="schema"></select>
+      </div>
+      <div>
+        <label for="q">Question <span class="muted">(⌘/Ctrl+Enter to ask)</span></label>
+        <textarea id="q" placeholder="e.g. total paid amount by supplier in 2024"></textarea>
+      </div>
+      <button id="ask">Ask</button>
+    </div>
+  </div>
+  <div id="history"><div class="empty" id="empty">Ask a question to get started — your session history appears here.</div></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = (p, body) => fetch(p, body
+  ? { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) }
+  : undefined).then(async r => ({ ok:r.ok, status:r.status, data:await r.json() }));
+
+let count = 0;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function badge(label, val) {
+  const cls = val === true ? 'ok' : val === false ? 'bad' : 'na';
+  const mark = val === true ? '✓' : val === false ? '✗' : '–';
+  return `<span class="badge ${cls}">${label} ${mark}</span>`;
+}
+
+async function loadSchemas() {
+  const { data } = await api('/schemas');
+  $('schema').innerHTML = data.schemas.map(s => `<option>${s}</option>`).join('');
+}
+
+async function ask() {
+  const question = $('q').value.trim();
+  const schema_id = $('schema').value;
+  if (!question) return;
+  $('ask').disabled = true;
+  $('empty')?.remove();
+
+  // build the entry shell immediately (shows "thinking")
+  const entry = el('div', 'entry card');
+  const head = el('div', 'qline');
+  head.appendChild(el('div', 'q', 'Q: ' + question));
+  head.appendChild(el('div', 'when', new Date().toLocaleTimeString()));
+  entry.appendChild(head);
+  entry.appendChild(el('div', 'schemaTag', 'schema: ' + schema_id));
+  const status = el('div', 'muted'); status.innerHTML = '<span class="spin"></span>proposing SQL…';
+  entry.appendChild(status);
+  $('history').prepend(entry);
+
+  try {
+    const { data } = await api('/query', { question, schema_id });
+    status.remove();
+    renderResult(entry, data);
+  } catch (e) {
+    status.textContent = 'query failed: ' + e;
+  } finally {
+    $('ask').disabled = false;
+    count++; $('meta').textContent = count + ' quer' + (count === 1 ? 'y' : 'ies') + ' this session';
+  }
+}
+
+function renderResult(entry, d) {
+  const sql = el('pre', null, d.sql || '(no SQL)');
+  entry.appendChild(sql);
+
+  const badges = el('div', 'badges');
+  badges.innerHTML = badge('schema-valid', d.graph_valid)
+      + badge('EXPLAIN', d.explain_ok) + badge('constrained', d.constrained);
+  entry.appendChild(badges);
+  entry.appendChild(el('div', 'muted', 'retrieved: ' + (d.tables_used || []).join(', ')));
+  if (d.note) entry.appendChild(el('div', 'note', d.note));
+
+  const runnable = d.graph_valid && d.explain_ok !== false;
+  if (runnable) {
+    const box = el('div', 'confirm');
+    box.appendChild(document.createTextNode('Runs read-only against the live database when you confirm. '));
+    const btn = el('button', 'secondary small', 'Run read-only ▸');
+    box.appendChild(el('div', null)).appendChild(btn);
+    entry.appendChild(box);
+    btn.onclick = () => run(entry, d, btn);
+  }
+}
+
+async function run(entry, d, btn) {
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span>running…';
+  const { ok, data } = await api('/execute', { schema_id:d.schema_id, sql:d.sql, max_rows:50 });
+  btn.remove();
+  if (!ok) { entry.appendChild(el('div', 'note', 'execute blocked: ' + (data.detail || 'error'))); return; }
+  const rows = data.rows || [];
+  entry.appendChild(el('div', 'muted', data.row_count + ' row(s)'));
+  if (rows.length) {
+    const t = el('table');
+    const hr = el('tr');
+    rows[0].forEach((_, i) => hr.appendChild(el('th', null, 'c' + (i + 1))));
+    t.appendChild(hr);
+    rows.forEach(r => {
+      const tr = el('tr');
+      r.forEach(c => tr.appendChild(el('td', null, c == null ? '∅' : String(c))));
+      t.appendChild(tr);
+    });
+    entry.appendChild(t);
+  }
+}
+
+$('ask').onclick = ask;
+$('q').addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') ask();
+});
+loadSchemas();
+</script>
+</body>
+</html>

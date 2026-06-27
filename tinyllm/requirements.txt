@@ -1,0 +1,4 @@
+# Data-engine slice. Intentionally light; the model stack (PyTorch) comes later.
+sqlglot>=23   # Oracle-dialect parse validation (first gate before Oracle XE)
+pytest>=8     # tests
+torch>=2.2    # from-scratch encoder-decoder + training (MPS / CUDA / CPU)

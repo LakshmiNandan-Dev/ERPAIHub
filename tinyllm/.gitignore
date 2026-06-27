@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Model artifacts (large binaries; regenerable by training, and the weights are
+# the crown-jewel IP -- not published)
+artifacts/
+
+# Unrelated working documents that happen to live in this directory
+*.docx
+*.pptx
+~$*
+
+# OS / editor
+.DS_Store

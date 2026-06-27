@@ -1,0 +1,26 @@
+# TinyLLM as a separate entity in the ERP AI Hub, beside the Ollama LLM.
+# The hub's LLM calls TinyLLM at http://tinyllm:8000/query for NL->SQL.
+#
+#   docker compose -f deploy/docker/docker-compose.yml up -d
+#
+services:
+  ollama:                                   # your existing general LLM
+    image: ollama/ollama
+    ports: ["11434:11434"]
+    volumes: ["ollama:/root/.ollama"]
+    restart: unless-stopped
+
+  tinyllm:                                  # the grounded NL -> Oracle EBS SQL specialist
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: tinyllm:latest
+    ports: ["8000:8000"]                    # REST: /query /execute /schemas /setup
+    volumes: ["tinyllm_data:/data"]         # extracted schemas + customer fine-tunes persist
+    # extraction/EXPLAIN reach the customer's Oracle over the network with a
+    # READ-ONLY least-privilege account (configure via the /setup console).
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  tinyllm_data:
