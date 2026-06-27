@@ -1,0 +1,33 @@
+[project]
+name = "tinyllm"
+version = "0.0.1"
+description = "From-scratch NL->Oracle-SQL for Oracle E-Business Suite"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = ["License :: Other/Proprietary License"]
+dependencies = [
+    "sqlglot>=23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+model = ["torch>=2.2"]
+serve = ["fastapi>=0.110", "uvicorn>=0.29", "pydantic>=2"]
+oracle = ["oracledb>=2"]              # live customer-side EBS extraction
+onnx = ["onnx>=1.15", "onnxruntime>=1.17"]   # portable export (scripts/export_onnx.py)
+
+[project.scripts]
+tinyllm = "tinyllm.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["tinyllm*"]
+
+[tool.setuptools.package-data]
+"tinyllm.serve" = ["static/*.html"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

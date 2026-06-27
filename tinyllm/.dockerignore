@@ -1,0 +1,16 @@
+.git
+__pycache__
+*.py[cod]
+.pytest_cache
+.venv
+venv
+*.docx
+*.pptx
+~$*
+.DS_Store
+deploy/onnx
+
+# ship ONLY the served vendor base from artifacts/, not every checkpoint
+artifacts/*
+!artifacts/model_best.pt
+!artifacts/tokenizer.json

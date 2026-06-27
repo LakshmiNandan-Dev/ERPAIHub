@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyLLM — Setup</title>
+<style>
+  :root { --red:#c74034; --slate:#3a4655; --bg:#f4f5f7; --line:#dfe3e8; --ok:#1f7a3d; --muted:#6b6b6b; }
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1b1b1b;background:var(--bg)}
+  header{background:var(--slate);color:#fff;padding:13px 22px;display:flex;justify-content:space-between;align-items:center}
+  header h1{margin:0;font-size:17px;font-weight:600}
+  header a{color:#fff;font-size:13px;text-decoration:none;border:1px solid #5a6675;padding:5px 11px;border-radius:6px}
+  main{max-width:760px;margin:22px auto;padding:0 18px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:18px}
+  .card h2{margin:0 0 4px;font-size:15px}
+  .card .sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+  .step{display:inline-block;width:22px;height:22px;border-radius:50%;background:var(--red);color:#fff;
+        text-align:center;line-height:22px;font-size:13px;margin-right:8px}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  input,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;font:inherit}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .row{display:flex;align-items:center;gap:8px;margin:10px 0}
+  button{background:var(--red);color:#fff;border:0;border-radius:7px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button:disabled{background:#c9ccd1;cursor:not-allowed}
+  button.secondary{background:var(--slate)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left}
+  th{background:#f0f2f5}
+  .muted{color:var(--muted);font-size:13px}
+  .note{color:var(--red);font-size:13px;margin-top:8px}
+  .ok{color:var(--ok);font-weight:600}
+  .hidden{display:none}
+  .bar{height:10px;background:#eef0f3;border-radius:6px;overflow:hidden;margin-top:10px}
+  .bar > div{height:100%;background:var(--ok);width:0%;transition:width .4s}
+  fieldset{border:1px solid var(--line);border-radius:8px;padding:12px;margin:0}
+  fieldset[disabled]{opacity:.5}
+</style>
+</head>
+<body>
+<header>
+  <h1>TinyLLM · Setup</h1>
+  <a href="/">Query console →</a>
+</header>
+<main>
+  <div class="card">
+    <h2><span class="step">1</span>Connect to Oracle EBS &amp; extract the catalog</h2>
+    <div class="sub">Read-only. Schema/flexfield metadata only — no business data leaves the instance.</div>
+    <div class="row"><input type="checkbox" id="mock" style="width:auto" checked>
+      <label for="mock" style="margin:0">Use the built-in AP/GL demo catalog (no Oracle needed)</label></div>
+    <fieldset id="creds" disabled>
+      <div class="grid">
+        <div><label>Host</label><input id="host" placeholder="ebs-db.internal"></div>
+        <div><label>Port</label><input id="port" value="1521"></div>
+        <div><label>Service name / SID</label><input id="service_name" placeholder="EBSPROD"></div>
+        <div><label>Username (read-only)</label><input id="username" placeholder="apps_ro"></div>
+        <div style="grid-column:1/3"><label>Password</label><input id="password" type="password"></div>
+      </div>
+    </fieldset>
+    <label>Schema id (a name for this catalog)</label><input id="schema_id" value="ebs_prod">
+    <div style="margin-top:14px"><button id="extract">Extract schema</button></div>
+    <div id="extractResult" class="hidden"></div>
+  </div>
+
+  <div class="card" id="trainCard" style="opacity:.5;pointer-events:none">
+    <h2><span class="step">2</span>Fine-tune on this schema</h2>
+    <div class="sub">Specializes the shipped base model to your tables, lookups, and flexfield meanings — runs locally.</div>
+    <label>Training steps</label><input id="steps" value="300" style="max-width:160px">
+    <div style="margin-top:14px"><button id="train" class="secondary">Start fine-tuning</button></div>
+    <div id="progress" class="hidden">
+      <div class="muted" id="progressText">starting…</div>
+      <div class="bar"><div id="bar"></div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = (p, body) => fetch(p, body
+  ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}
+  : undefined).then(async r => ({ok:r.ok, status:r.status, data:await r.json()}));
+
+$('mock').addEventListener('change', () => { $('creds').disabled = $('mock').checked; });
+
+$('extract').onclick = async () => {
+  $('extract').disabled = true; $('extract').textContent = 'Extracting…';
+  const body = {
+    schema_id: $('schema_id').value, mock: $('mock').checked,
+    host:$('host').value, port:parseInt($('port').value||'1521'),
+    service_name:$('service_name').value, username:$('username').value, password:$('password').value,
+  };
+  const {ok, data} = await api('/admin/extract', body);
+  $('extract').disabled = false; $('extract').textContent = 'Extract schema';
+  const r = $('extractResult'); r.classList.remove('hidden');
+  if (!ok) { r.innerHTML = `<div class="note">extract failed: ${data.detail||'error'}</div>`; return; }
+  const rows = data.tables.map(t =>
+    `<tr><td>${t.name}</td><td>${t.columns}</td><td>${t.flexfields||''}</td></tr>`).join('');
+  r.innerHTML = `<div class="ok" style="margin-top:10px">✓ extracted ${data.tables.length} tables, `
+    + `${data.foreign_keys} foreign keys (inferred where EBS declares none)</div>`
+    + `<table><tr><th>table</th><th>columns</th><th>flexfield segments</th></tr>${rows}</table>`;
+  const c = $('trainCard'); c.style.opacity = 1; c.style.pointerEvents = 'auto';
+  $('train').dataset.schema = data.schema_id;
+};
+
+$('train').onclick = async () => {
+  $('train').disabled = true;
+  const {ok, data} = await api('/admin/train',
+    {schema_id: $('train').dataset.schema, steps: parseInt($('steps').value||'300')});
+  if (!ok) { $('train').disabled=false; alert('train: '+(data.detail||'error')); return; }
+  $('progress').classList.remove('hidden');
+  poll();
+};
+
+async function poll() {
+  const {data} = await api('/admin/train/status');
+  const pct = data.total ? Math.round(100*data.step/data.total) : 0;
+  $('bar').style.width = pct + '%';
+  if (data.state === 'running') {
+    $('progressText').textContent = `fine-tuning… step ${data.step}/${data.total} (${pct}%)`;
+    setTimeout(poll, 2000);
+  } else if (data.state === 'done') {
+    $('bar').style.width = '100%';
+    $('progressText').innerHTML = data.reloaded
+      ? '<span class="ok">✓ done — model fine-tuned and loaded. <a href="/">Go query it →</a></span>'
+      : 'finishing (loading checkpoint)…';
+    if (!data.reloaded) setTimeout(poll, 1500); else $('train').disabled = false;
+  } else {
+    $('progressText').innerHTML = `<span class="note">training ${data.state}</span>`;
+    $('train').disabled = false;
+  }
+}
+</script>
+</body>
+</html>
