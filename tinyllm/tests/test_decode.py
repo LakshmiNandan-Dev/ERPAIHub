@@ -186,3 +186,54 @@ def test_hard_generate_returns_contract():
     sql, ok = hard_generate(model, tok, batch["src"], batch["src_keep"],
                             ex.schema, beam=3, max_len=20)
     assert isinstance(sql, str) and isinstance(ok, bool)
+
+
+# -- value-constrained decoding: a lookup literal must stay in its domain -------
+from tinyllm.extract import EbsExtractor, MockCatalog  # noqa: E402
+
+# ap_invoices_all.invoice_type_lookup_code -> {STANDARD, CREDIT, PREPAYMENT, MIXED}
+_VALUE_SCHEMA = EbsExtractor(MockCatalog()).extract()
+_VAL_BASE = ("SELECT aia.invoice_id FROM ap_invoices_all aia "
+             "WHERE aia.invoice_type_lookup_code = ")
+
+
+def test_value_gate_allows_domain_value_and_every_prefix():
+    gate = SchemaPrefixGate(_VALUE_SCHEMA)
+    ok_sql = _VAL_BASE + "'STANDARD'"
+    for k in range(len(_VAL_BASE), len(ok_sql) + 1):     # every char prefix survives
+        assert gate.ok(ok_sql[:k]) is True, ok_sql[:k]
+
+
+def test_value_gate_rejects_out_of_domain_literal():
+    gate = SchemaPrefixGate(_VALUE_SCHEMA)
+    assert gate.ok(_VAL_BASE + "'PAID'") is False        # complete, not a member
+    assert gate.ok(_VAL_BASE + "'PA") is False           # open, prefixes no allowed value
+    assert gate.ok(_VAL_BASE + "'P") is True             # open, still en route to PREPAYMENT
+    assert gate.ok(_VAL_BASE + "'") is True              # empty value -> any member reachable
+
+
+def test_value_gate_leaves_unconstrained_columns_alone():
+    """A non-lookup column (no configured domain) is not value-gated."""
+    gate = SchemaPrefixGate(_VALUE_SCHEMA)
+    # invoice_num has no allowed_values -> any literal is fine
+    sql = "SELECT aia.invoice_id FROM ap_invoices_all aia WHERE aia.invoice_num = 'ANYTHING'"
+    assert gate.ok(sql) is True
+
+
+def test_logit_mask_restricts_literal_to_allowed_values():
+    gate = SchemaPrefixGate(_VALUE_SCHEMA)
+    tok = BPETokenizer().train(["STANDARD CREDIT PREPAYMENT MIXED"], vocab_size=400)
+    ts = build_token_strings(tok)
+    domain = {"STANDARD", "CREDIT", "PREPAYMENT", "MIXED"}
+    allowed = gate.allowed_next_tokens(_VAL_BASE + "'", ts)   # just opened the quote
+    assert allowed is not None and allowed
+    for tid in allowed:                                       # every id-fragment must
+        s = ts[tid]                                           # spell toward a member
+        if s and (s[0].isalnum() or s[0] == "_"):
+            assert any(v.startswith(s) for v in domain), s
+    # mid-value 'STAND -> only tokens that continue toward STANDARD's "ARD" tail
+    mid = gate.allowed_next_tokens(_VAL_BASE + "'STAND", ts)
+    for tid in mid:
+        s = ts[tid]
+        if s and (s[0].isalnum() or s[0] == "_"):
+            assert "ARD".startswith(s), s

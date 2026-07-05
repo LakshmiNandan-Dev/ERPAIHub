@@ -137,7 +137,10 @@ class SyntheticSchemaGenerator:
         d2_tbl = d2_pk = None
         if include_dim2:
             if ebs:
-                d2, d2_pk, d2_label = rng.choice([x for x in _EBS_DIMS if x[0] != entity])
+                # exclude a dim whose PK name collides with the primary entity's
+                # (suppliers/vendors both key on vendor_id) -> no duplicate header FK column
+                choices = [x for x in _EBS_DIMS if x[0] != entity and x[1] != entity_pk]
+                d2, d2_pk, d2_label = rng.choice(choices)
             else:
                 if self.style == "procedural":
                     d2 = self._root()

@@ -51,11 +51,14 @@ class EbsExtractor:
         pks = {t: set(src.primary_key(t)) for t in names}
         flex = {(f.table, f.column): f.business_label for f in src.flex_segments()}
         lookups = {(lk.table, lk.column): lk for lk in src.lookups()}
-        # which table OWNS each PK column name -> used to infer FK targets
+        # which table OWNS each PK column name -> used to infer FK targets.
+        # A table owns a name only when it's that table's SOLE primary key (a
+        # surrogate identity others reference); composite-PK members are usually
+        # FK components, not the table's identity, so they don't claim ownership.
         pk_owner: dict[str, str] = {}
         for t in names:
-            for c in pks[t]:
-                pk_owner.setdefault(c, t)
+            if len(pks[t]) == 1:
+                pk_owner.setdefault(next(iter(pks[t])), t)
 
         tables: list[Table] = []
         for tname in names:
@@ -65,10 +68,11 @@ class EbsExtractor:
             tables.append(Table(tname, cols, is_multi_org=multi_org))
 
         return Schema(name="ebs", tables=tables,
-                      foreign_keys=self._foreign_keys(src, names, pks, pk_owner))
+                      foreign_keys=self._foreign_keys(src, names, pk_owner))
 
     def _column(self, tname, rc, pk_set, flex, lookups) -> Column:
         name = rc.name.lower()
+        tokens = name.split("_")
         ctype = _ora_type(rc.data_type)
         is_pk = name in pk_set
         role = business_label = lookup_type = None
@@ -85,20 +89,22 @@ class EbsExtractor:
             role = SemanticRole.ID
         elif ctype == ColumnType.DATE:
             role = SemanticRole.DATE
-        elif ctype == ColumnType.NUMBER and any(h in name for h in _QTY_HINTS):
+        elif ctype == ColumnType.NUMBER and any(h in tokens for h in _QTY_HINTS):
             role = SemanticRole.QUANTITY
-        elif ctype == ColumnType.NUMBER and any(h in name for h in _AMOUNT_HINTS):
+        elif ctype == ColumnType.NUMBER and any(h in tokens for h in _AMOUNT_HINTS):
             role = SemanticRole.AMOUNT
         elif name == "name" or name.endswith(_NAME_SUFFIXES):
             role = SemanticRole.NAME
-        elif name.endswith(_CODE_SUFFIXES):
+        elif name.endswith("_flag") or name.endswith(_CODE_SUFFIXES):
+            # coded business value (Y/N flag, *_code, *_number); when no lookup
+            # domain is configured this is the best role we can assign
             role = SemanticRole.CODE
 
         return Column(name, ctype, nullable=rc.nullable, is_pk=is_pk, role=role,
                       business_label=business_label, lookup_type=lookup_type,
                       allowed_values=values)
 
-    def _foreign_keys(self, src, names, pks, pk_owner) -> list[ForeignKey]:
+    def _foreign_keys(self, src, names, pk_owner) -> list[ForeignKey]:
         fks: list[ForeignKey] = []
         seen: set[tuple] = set()
 
@@ -114,7 +120,9 @@ class EbsExtractor:
         for t in names:                                    # inferred by convention
             for rc in src.columns(t):
                 name = rc.name.lower()
-                if name == "org_id" or not name.endswith("_id") or name in pks[t]:
+                # a column that is part of THIS table's PK can still be a real FK
+                # (composite-PK children); the `!= t` guard below stops self-loops
+                if name == "org_id" or not name.endswith("_id"):
                     continue
                 if name in _FK_HINTS:
                     add(t, name, *_FK_HINTS[name])

@@ -154,6 +154,14 @@ def constrained_generate(model, tok, src, src_keep, schema, beam=5, max_len=160)
 
 _GATE_TOK = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\.|\s+|[^A-Za-z0-9_.\s]+")
 _TRAIL_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+# a lookup literal `<alias>.<col> = '<value>'` -- group4 is the closing quote
+# (empty while the value is still being typed). Used to constrain the literal to
+# the column's allowed_values as the decoder types it.
+_VALUE_RE = re.compile(r"([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*'([^']*)('?)")
+# same, anchored at end -> the value slot currently being generated (open quote,
+# no closing quote yet); group3 is the partial value typed so far ('' just after
+# the opening quote).
+_VALUE_SLOT = re.compile(r"([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*'([^']*)$")
 # datetime fields that precede FROM inside EXTRACT(YEAR FROM col) -- that FROM
 # introduces an expression, NOT a table, so it must not be gated as one.
 _EXTRACT_FIELDS = {"YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND"}
@@ -202,6 +210,14 @@ class SchemaPrefixGate:
             tt, tc = fk.to_table.lower(), fk.to_column.lower()
             self.fk_join.setdefault((ft, fc, tt), set()).add(tc)
             self.fk_join.setdefault((tt, tc, ft), set()).add(fc)
+        # (table, col) -> allowed string-literal domain (lookup/value-set members).
+        # Only columns with a KNOWN domain are constrained; extracted lookups with
+        # no configured values (empty allowed_values) are left unconstrained.
+        self.value_domain: dict[tuple[str, str], set[str]] = {}
+        for t in schema.tables:
+            for c in t.columns:
+                if c.allowed_values:
+                    self.value_domain[(t.name.lower(), c.name.lower())] = set(c.allowed_values)
 
     @staticmethod
     def _lex(text: str) -> list[tuple[str, str]]:
@@ -298,6 +314,25 @@ class SchemaPrefixGate:
                                 return False
                         elif c2 not in valid:
                             return False
+        return self._value_ok(text, aliases)
+
+    def _value_ok(self, text: str, aliases: dict[str, str]) -> bool:
+        """A lookup literal must stay inside the column's allowed domain: exact
+        once closed (`= 'X'`), a live prefix of some allowed value while still
+        being typed (`= 'X`). Unknown alias / no configured domain -> lenient."""
+        for m in _VALUE_RE.finditer(text):
+            tbl = aliases.get(m.group(1).lower())
+            if tbl is None:
+                continue
+            domain = self.value_domain.get((tbl, m.group(2).lower()))
+            if domain is None:
+                continue
+            val, closed = m.group(3), m.group(4) == "'"
+            if closed:
+                if val not in domain:
+                    return False
+            elif not any(v.startswith(val) for v in domain):
+                return False
         return True
 
     # -- hard constraint: which identifiers can the NEXT token spell? ---------
@@ -311,6 +346,18 @@ class SchemaPrefixGate:
         if not toks:
             return None
         aliases = self._alias_map(toks)
+
+        # lookup-value slot: inside `<alias>.<col> = '<partial>` restrict the next
+        # token to what spells one of the column's allowed values (checked before
+        # the identifier slots, since the open quote makes this unambiguous).
+        vm = _VALUE_SLOT.search(text)
+        if vm:
+            tbl = aliases.get(vm.group(1).lower())
+            if tbl is not None:
+                domain = self.value_domain.get((tbl, vm.group(2).lower()))
+                if domain is not None:
+                    return domain, vm.group(3)
+
         mid = bool(_TRAIL_WORD.search(text))            # currently typing an identifier
 
         if mid:

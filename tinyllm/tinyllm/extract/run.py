@@ -14,7 +14,10 @@ from .catalog import MockCatalog, OracleCatalog
 from .extractor import EbsExtractor
 
 
-def extract_schema(dsn: str | None = None, mock: bool = False) -> Schema:
+def extract_schema(dsn: str | None = None, mock: bool = False,
+                   extra_owners=()) -> Schema:
+    """Extract a Schema. With a dsn this pulls ALL tables in every licensed/shared
+    EBS schema (plus any `extra_owners` you name, e.g. custom XX* schemas)."""
     if mock:
         source = MockCatalog()
     elif dsn:
@@ -23,9 +26,9 @@ def extract_schema(dsn: str | None = None, mock: bool = False) -> Schema:
         except ImportError as e:  # pragma: no cover
             raise RuntimeError("live extraction needs python-oracledb: "
                                "pip install 'tinyllm[oracle]'") from e
-        # The DSN should point at a READ-ONLY, least-privilege account.
+        # The DSN should point at a READ-ONLY account with dictionary access.
         conn = oracledb.connect(dsn)
-        source = OracleCatalog(conn.cursor())
+        source = OracleCatalog(conn.cursor(), extra_owners=extra_owners)
     else:
         raise ValueError("extract_schema needs mock=True or dsn=...")
     return EbsExtractor(source).extract()

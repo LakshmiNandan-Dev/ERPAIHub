@@ -25,7 +25,31 @@ from ..schema_graph.types import Schema, SemanticRole
 def schema_repair(sql: str, question: str, schema: Schema) -> str:
     sql = _repair_flexfield(sql, question, schema)
     sql = _repair_lookup_values(sql, question, schema)
+    sql = _repair_org_filter(sql, question, schema)
     return sql
+
+
+# "for operating unit 305", "for org 305", "in operating unit 305", "for ou 305"
+_ORG_PHRASE = re.compile(r"(?:operating unit|organization|org|ou|unit)\s+#?(\d+)",
+                         re.IGNORECASE)
+
+
+def _repair_org_filter(sql: str, question: str, schema: Schema) -> str:
+    """The numeric twin of the lookup fix: when the question names an operating
+    unit / org number, force org_id equality filters to that value (the model
+    sometimes picks a different in-range org). Only acts on ORG_ID-role columns
+    and only when the question states a number."""
+    m = _ORG_PHRASE.search(question)
+    if not m:
+        return sql
+    want = m.group(1)
+    org_cols = {c.name for t in schema.tables for c in t.columns
+                if c.role == SemanticRole.ORG_ID}
+    if not org_cols:
+        return sql
+    pat = re.compile(r"(\b\w+\.(?:" + "|".join(re.escape(c) for c in org_cols)
+                     + r")\s*=\s*)(\d+)")
+    return pat.sub(lambda mm: mm.group(1) + want, sql)
 
 
 def _repair_flexfield(sql: str, question: str, schema: Schema) -> str:
