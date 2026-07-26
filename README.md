@@ -309,11 +309,29 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
 pip install -r requirements.txt
 
-# Apply database schema
-alembic upgrade head
+# The schema is provisioned automatically on startup (create_all + seeding).
 
-uvicorn app.gateway:gateway --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+The NL-SQL agent (`tinyllm/`, a sibling directory to `api/`) needs to be on
+`PYTHONPATH` and its checkpoint/tokenizer/data paths pointed at real local
+paths — the defaults (`NLSQL_DIR=/app/...`, etc.) are Docker-only. `PYTHONPATH`
+must be exported in the shell before starting uvicorn (it has to exist before
+the interpreter starts — `api/.env` loads too late to affect it); the
+`NLSQL_*` paths can go in either:
+
+```bash
+export PYTHONPATH="$PYTHONPATH:$(cd .. && pwd)/tinyllm"
+```
+```env
+# api/.env
+NLSQL_DIR=/absolute/path/to/oraebsagent/nlsql_data
+NLSQL_BASE_CKPT=/absolute/path/to/oraebsagent/tinyllm/artifacts/model_best.pt
+NLSQL_BASE_TOK=/absolute/path/to/oraebsagent/tinyllm/artifacts/tokenizer.json
+```
+Every other agent (Chat, Deployment, Patching, Performance, HCM, Monitoring,
+Compare) works natively without any extra configuration.
 
 ### Frontend
 
@@ -332,6 +350,9 @@ npm run dev
 | `DATABASE_URL` | `postgresql://aiuser:aipassword@localhost:5432/erpai_hub` | PostgreSQL connection |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
 | `APP_SECRET_KEY` | `dev-insecure-change-me` | Passphrase used to encrypt admin-managed secrets (SSH/DB passwords, LLM API keys) at rest. **Set a strong random value in production** — changing it later makes previously stored secrets unreadable. |
+| `NLSQL_DIR` | `/app/nlsql_data` | NL-SQL agent's data dir (extracted schemas, fine-tune runs, logs). Docker-only default — set to a real local path outside Docker. |
+| `NLSQL_BASE_CKPT` | `/app/tinyllm/artifacts/model_best.pt` | NL-SQL base model checkpoint. Docker-only default — set to `tinyllm/artifacts/model_best.pt` in your checkout outside Docker. |
+| `NLSQL_BASE_TOK` | `/app/tinyllm/artifacts/tokenizer.json` | NL-SQL tokenizer. Docker-only default — set to `tinyllm/artifacts/tokenizer.json` in your checkout outside Docker. |
 
 Create `api/.env` for local dev — the app picks it up automatically via `python-dotenv`:
 
@@ -378,42 +399,68 @@ alembic downgrade -1
 
 ## Project Layout
 
+The backend is organised as `core/` (cross-cutting services) + `platform_api/`
+(platform routers) + `modules/<ebs-domain>/` (per-domain agents), with `models/`
+and `schemas/` split into packages by domain.
+
 ```
 oraebsagent/
 ├── docker-compose.yml
 ├── api/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── alembic/                    # Migration scripts
+│   ├── alembic/                      # Legacy migrations (schema is provisioned via create_all)
+│   ├── tests/                        # pytest suite
 │   └── app/
-│       ├── gateway.py              # FastAPI app + CORS
-│       ├── models.py               # SQLAlchemy ORM models
-│       ├── schemas.py              # Pydantic request / response schemas
-│       ├── database.py             # DB session factory
-│       ├── llm_service.py          # Ollama / OpenAI / Anthropic streaming + sync
-│       ├── rag_service.py          # ChromaDB indexing and retrieval
-│       ├── rlaif_service.py        # Background QA audit
-│       ├── mcp_server.py           # MCP integration
-│       └── routers/
-│           ├── auth.py             # Register / login / logout / change-password
-│           ├── chat.py             # Chat sessions, SSE stream, deployment intent
-│           ├── rag.py              # Document upload / list / delete
-│           ├── deployments.py      # Deployment runs: CRUD, cancel, retry, migrate
-│           ├── deployment_agent.py # Deployment agent background worker
-│           └── performance_agent.py# Performance diagnostics + AWR analysis
+│       ├── main.py                   # FastAPI app, CORS, router registration, bootstrap
+│       ├── core/                     # Cross-cutting services
+│       │   ├── database.py           # SQLAlchemy engine + session factory
+│       │   ├── bootstrap.py          # create_all + additive upgrades + first-run seeding
+│       │   ├── config_service.py     # Per-agent LLM + credential resolution
+│       │   ├── prompts.py            # Admin-editable agent prompt registry
+│       │   ├── telemetry.py          # Live metrics + durable usage/interaction logs
+│       │   ├── smalltalk.py          # Instant greeting/small-talk intent classifier
+│       │   ├── crypto.py             # Fernet encryption for stored secrets
+│       │   ├── middleware.py         # Request telemetry middleware
+│       │   ├── auth/                 # auth.py (session auth, RBAC gates), sso.py
+│       │   ├── llm/                  # llm_service, model_router, semantic_cache, llm_cache, llm_guard_service
+│       │   ├── rag/                  # rag_service.py (ChromaDB + rerank + retrieval metrics)
+│       │   ├── audit/  safety/  integrations/  tools/   # audit log, prod guard, Git/Confluence creds, MCP server
+│       ├── platform_api/             # Platform routers
+│       │   ├── chat.py               # Chat sessions, SSE stream, deploy intent, small-talk fast-path
+│       │   ├── rag.py                # KB upload / list / re-index / delete
+│       │   ├── admin.py  config.py   # User/role/server/env/LLM admin + read-only config
+│       │   ├── monitoring.py         # Telemetry, RAG metrics, interaction audit trail
+│       │   └── audit.py              # Auth / agent-invocation audit views
+│       ├── modules/                  # Per-EBS-domain agents
+│       │   ├── dba/                  # Technical agents
+│       │   │   ├── deployment/       # deployments, deployment_agent, artifact_service
+│       │   │   ├── performance/      # performance_agent (diagnostics + AWR)
+│       │   │   ├── cloning/          # cloning, cloning_service
+│       │   │   └── patching/         # patching, patching_service, patch_exec (adop)
+│       │   └── functional/           # Functional agents
+│       │       └── hcm/              # hcm_agent, inquiries, db (R12 HCM/Payroll, read-only)
+│       ├── ml/                       # rl, rlaif_service (QA audit), training, training_service
+│       ├── models/                   # ORM package by domain (iam, chat, rag, dba, audit, settings, ml, infra)
+│       ├── schemas/                  # Pydantic package by domain
+│       └── common/                   # Shared utils
 └── frontend/
     ├── Dockerfile
     ├── package.json
     └── src/
         ├── App.jsx
-        ├── api.js                  # Axios client with auth headers
-        ├── ModelManager.jsx        # LLM provider / model switcher
+        ├── api.js                    # Axios client with auth headers
+        ├── ModelManager.jsx          # LLM provider / model switcher
         └── components/
-            ├── Auth/               # Login / register screens
-            ├── Chat/               # Streaming chat UI
-            ├── Deployment/         # Deployment panel + step log viewer
-            ├── Performance/        # Diagnostics dashboard + AWR UI
-            └── Rag/                # Knowledge base manager
+            ├── Auth.jsx              # Login / register
+            ├── Chat/                 # Streaming chat UI + agent switcher
+            ├── Admin/                # Admin Console (users, roles, prompts, routing, …)
+            ├── Monitoring/           # Monitoring Console (telemetry, quality, interaction audit)
+            ├── Deployment/           # Deployment panel + step log viewer
+            ├── Performance/          # Diagnostics dashboard + AWR UI
+            ├── Cloning/  Patching/   # Cloning + ADOP patching centers
+            ├── Functional/           # HCM/Payroll functional agent panel
+            └── Rag/                  # Knowledge base manager
 ```
 
 ---

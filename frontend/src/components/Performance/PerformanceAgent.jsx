@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { Activity, X, ChevronDown, ChevronRight, Loader2, Upload } from 'lucide-react';
 import api from '../../api';
 import './PerformanceAgent.css';
+import '../Functional/HcmAgent.css';
 
 const AREA_META = {
   wait_events:        { label: 'Wait Events',        icon: '⏱️' },
@@ -54,7 +55,7 @@ export default function PerformanceAgent({ onClose }) {
   const analysisRef                   = useRef(null);
 
   // ── Mode state ────────────────────────────────────────────────────────────────
-  const [activeMode, setActiveMode] = useState('live');       // 'live' | 'awr'
+  const [activeMode, setActiveMode] = useState('live');       // 'live' | 'awr' | 'ask'
   const [awrSubTab, setAwrSubTab]   = useState('snapshots');  // 'snapshots' | 'upload'
 
   // ── Live diagnostics state ────────────────────────────────────────────────────
@@ -85,6 +86,14 @@ export default function PerformanceAgent({ onClose }) {
   // ── AWR shared ────────────────────────────────────────────────────────────────
   const [awrRunning, setAwrRunning] = useState(false);
   const awrReaderRef                = useRef(null);
+
+  // ── Ask (NL→SQL fallback + general advice) state ──────────────────────────────
+  const [question, setQuestion]     = useState('');
+  const [askRows, setAskRows]       = useState(null);
+  const [askSource, setAskSource]   = useState('');
+  const [askSql, setAskSql]         = useState('');
+  const [askRunning, setAskRunning] = useState(false);
+  const askReaderRef                = useRef(null);
 
   // ── Effects ───────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -232,10 +241,10 @@ export default function PerformanceAgent({ onClose }) {
     setPhase('');
   };
 
-  // ── AWR SSE stream reader ─────────────────────────────────────────────────────
-  const _readAwrStream = async (resp, onEvent) => {
+  // ── AWR SSE stream reader (reused by Ask mode via readerRefTarget) ────────────
+  const _readAwrStream = async (resp, onEvent, readerRefTarget = awrReaderRef) => {
     const reader  = resp.body.getReader();
-    awrReaderRef.current = reader;
+    readerRefTarget.current = reader;
     const decoder = new TextDecoder();
     let   buf     = '';
     while (true) {
@@ -333,6 +342,47 @@ export default function PerformanceAgent({ onClose }) {
   const stopAwrAnalysis = () => {
     awrReaderRef.current?.cancel();
     setAwrRunning(false);
+    setStatus('idle');
+    setPhase('');
+  };
+
+  // ── Ask (NL→SQL fallback + general advice) ────────────────────────────────────
+  const runAsk = async () => {
+    if (askRunning || !question.trim()) return;
+    setAskRunning(true);
+    setStatus('running');
+    setPhase('');
+    setAnalysisText('');
+    setAskRows(null);
+    setAskSource('');
+    setAskSql('');
+
+    const token = localStorage.getItem('session_token');
+    try {
+      const resp = await fetch(`${api.defaults.baseURL}/performance/ask`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...getLLMHeaders() },
+        body: JSON.stringify({ question, environment: selectedEnv || null }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      await _readAwrStream(resp, (evt) => {
+        if (evt.type === 'phase')            setPhase(evt.content);
+        if (evt.type === 'data')             { setAskRows(evt.rows || []); setAskSource(evt.source || ''); setAskSql(evt.sql || ''); }
+        if (evt.type === 'analysis_token')   setAnalysisText(prev => prev + evt.content);
+        if (evt.type === 'analysis_complete') setStatus('complete');
+        if (evt.type === 'error') { setPhase(`❌ ${evt.content}`); setStatus('error'); }
+      }, askReaderRef);
+    } catch (err) {
+      setPhase(`❌ Connection error: ${err.message}`);
+      setStatus('error');
+    } finally {
+      setAskRunning(false);
+    }
+  };
+
+  const stopAsk = () => {
+    askReaderRef.current?.cancel();
+    setAskRunning(false);
     setStatus('idle');
     setPhase('');
   };
@@ -662,7 +712,7 @@ export default function PerformanceAgent({ onClose }) {
   };
 
   const LABEL_MAP = { idle: 'Idle', running: 'Analyzing...', complete: 'Complete', error: 'Error' };
-  const anyRunning = running || awrRunning;
+  const anyRunning = running || awrRunning || askRunning;
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -693,6 +743,13 @@ export default function PerformanceAgent({ onClose }) {
             disabled={anyRunning}
           >
             📋 AWR Analysis
+          </button>
+          <button
+            className={`perf-mode-tab ${activeMode === 'ask' ? 'active' : ''}`}
+            onClick={() => { if (!anyRunning) setActiveMode('ask'); }}
+            disabled={anyRunning}
+          >
+            💬 Ask
           </button>
         </div>
 
@@ -784,7 +841,7 @@ export default function PerformanceAgent({ onClose }) {
                 </div>
               )}
             </div>
-          ) : (
+          ) : activeMode === 'awr' ? (
             /* ── AWR Left Panel ───────────────────────────────────────────── */
             <div className="perf-left">
               <div className="perf-config" style={{ paddingBottom: '0.5rem' }}>
@@ -937,6 +994,76 @@ export default function PerformanceAgent({ onClose }) {
                 </div>
               )}
             </div>
+          ) : (
+            /* ── Ask Left Panel ───────────────────────────────────────────── */
+            <div className="perf-left">
+              <div className="perf-config">
+                <div>
+                  <div className="perf-config-label">Target Environment</div>
+                  {environments.length > 0 ? (
+                    <select className="perf-env-select" value={selectedEnv}
+                      onChange={e => setSelectedEnv(e.target.value)} disabled={askRunning}>
+                      {environments.map(env => (
+                        <option key={env.name} value={env.name}>{env.name} — {env.db_host || 'No host'}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div style={{ fontSize: '0.78rem', color: '#f87171', padding: '0.4rem 0' }}>
+                      No environments configured — live-data questions use general advice only.
+                    </div>
+                  )}
+                </div>
+
+                <div className="perf-config-label">Ask a performance / DBA question</div>
+                <textarea
+                  className="hcm-input hcm-textarea"
+                  rows={6}
+                  value={question}
+                  placeholder='e.g. How many concurrent requests errored in the last hour?'
+                  onChange={e => setQuestion(e.target.value)}
+                  disabled={askRunning}
+                />
+                {askRunning ? (
+                  <button className="btn-outline perf-run-btn" onClick={stopAsk}><X size={15} /> Stop</button>
+                ) : (
+                  <button className="btn-primary perf-run-btn" onClick={runAsk} disabled={!question.trim()}>
+                    💬 Ask
+                  </button>
+                )}
+                <div className="hcm-note">
+                  Read-only advisor. Live-data questions (e.g. "how many...", "top 10...") are answered via
+                  NL→SQL when an environment is selected; everything else gets general DBA guidance.
+                </div>
+
+                {askRows && (
+                  <div className="hcm-results">
+                    <div className="hcm-results-head">
+                      Results — {askRows.length} row{askRows.length === 1 ? '' : 's'}
+                      <span className={`hcm-source-badge ${askSource}`}>
+                        {askSource === 'nl_sql' ? '🤖 nl-sql' : askSource}
+                      </span>
+                    </div>
+                    {askSql && <pre className="hcm-generated-sql">{askSql}</pre>}
+                    {askRows.length > 0 ? (
+                      <div className="hcm-table-wrap">
+                        <table className="perf-metric-table">
+                          <thead><tr>{Object.keys(askRows[0]).map(c => <th key={c}>{c}</th>)}</tr></thead>
+                          <tbody>
+                            {askRows.slice(0, 50).map((r, i) => (
+                              <tr key={i}>
+                                {Object.keys(askRows[0]).map(c => <td key={c} title={String(r[c] ?? '')}>{String(r[c] ?? '')}</td>)}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="hcm-note">No rows returned.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* ── Right Panel ────────────────────────────────────────────────── */}
@@ -960,9 +1087,11 @@ export default function PerformanceAgent({ onClose }) {
                   <p>
                     {activeMode === 'live'
                       ? <>Select an environment and analysis areas, then click <strong>Run Analysis</strong> to diagnose your Oracle EBS database performance.</>
-                      : awrSubTab === 'snapshots'
-                        ? <>Select baseline and comparison snap ranges, then click <strong>Compare Periods</strong> to run an AWR period-over-period analysis.</>
-                        : <>Upload one or two AWR reports (.txt or .html), then click <strong>Analyze Report</strong> to get AI-powered insights.</>
+                      : activeMode === 'ask'
+                        ? <>Ask a DBA/performance question and click <strong>Ask</strong>. Live-data questions run via NL→SQL when an environment is selected; everything else gets general guidance.</>
+                        : awrSubTab === 'snapshots'
+                          ? <>Select baseline and comparison snap ranges, then click <strong>Compare Periods</strong> to run an AWR period-over-period analysis.</>
+                          : <>Upload one or two AWR reports (.txt or .html), then click <strong>Analyze Report</strong> to get AI-powered insights.</>
                     }
                   </p>
                 </div>

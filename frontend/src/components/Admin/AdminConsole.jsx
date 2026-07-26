@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare, Ticket, ShieldAlert, MessageCircleQuestion, FileSearch } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
@@ -17,6 +17,7 @@ const TABS = [
   { key: 'integrations', label: 'Integrations',  icon: Link2,         roles: ['admin'] },
   { key: 'sso',          label: 'Authentication', icon: LogIn,        roles: ['admin'] },
   { key: 'audit',        label: 'Audit',         icon: ClipboardList, roles: ['admin', 'dba'] },
+  { key: 'tickets',      label: 'Tickets',       icon: Ticket,        roles: ['admin', 'dba'] },
 ];
 
 const PROVIDERS = ['openai', 'anthropic', 'gemini', 'ollama'];
@@ -59,6 +60,7 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
           {tab === 'integrations' && <IntegrationsTab />}
           {tab === 'sso' && <SsoTab />}
           {tab === 'audit' && <AuditTab currentUser={currentUser} />}
+          {tab === 'tickets' && <TicketsTab />}
         </div>
       </div>
     </div>
@@ -393,10 +395,59 @@ function PromptsTab() {
 
         {/* Prompts for the selected agent */}
         <div style={{ flex: 1, minWidth: 0 }}>
+          {active === 'chat' && <NlSqlChatSettingsCard />}
           {list.map(p => <PromptCard key={p.key} p={p} reload={reload} setError={setError} />)}
           {active && list.length === 0 && <p className="admin-muted">No prompts for this agent.</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+function NlSqlChatSettingsCard() {
+  const [val, setVal] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.get('/admin/nl-sql-chat-settings')
+      .then(r => setVal(r.data.show_technical_details))
+      .catch(e => setError(e.response?.data?.detail || e.message));
+  }, []);
+
+  const toggle = async (checked) => {
+    setVal(checked); setBusy(true); setMsg(''); setError('');
+    try {
+      await api.put('/admin/nl-sql-chat-settings', { show_technical_details: checked });
+      setMsg('Saved ✓');
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+      setVal(!checked);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ border: '1px solid rgba(0,0,0,0.12)', borderRadius: 8, padding: '0.7rem', marginBottom: '0.7rem' }}>
+      <strong>Chat Assistant reply detail</strong>
+      <p className="admin-muted" style={{ fontSize: '0.72rem', margin: '0.2rem 0 0.5rem' }}>
+        When a user asks a data question inline in the general Chat Assistant, the NL-SQL agent proposes
+        SQL before running it. Technical detail (schema validation, EXPLAIN status) is diagnostic — it's
+        always available to admins in the audit log regardless of this setting.
+      </p>
+      {error && <p className="admin-error">{error}</p>}
+      {val === null ? (
+        <p className="admin-muted">Loading…</p>
+      ) : (
+        <label className="admin-check">
+          <input type="checkbox" checked={val} disabled={busy}
+                 onChange={e => toggle(e.target.checked)} />
+          Show technical detail (schema-valid / explain-ok / notes) in chat replies
+        </label>
+      )}
+      {msg && <span className="admin-muted" style={{ marginLeft: 8 }}>{msg}</span>}
     </div>
   );
 }
@@ -568,8 +619,38 @@ function EnvironmentsTab() {
   const [servers, setServers] = useState([]);
   const [form, setForm] = useState(null);
   const [test, setTest] = useState({});
+  const [schedules, setSchedules] = useState({});   // environment_id -> schedule
+  const [savingSchedule, setSavingSchedule] = useState(null);
+  const [patchTargetsEnv, setPatchTargetsEnv] = useState(null);   // environment row, or null
+  const [patchFileScanEnv, setPatchFileScanEnv] = useState(null);   // environment row, or null
+  const [nlSqlEnv, setNlSqlEnv] = useState(null);   // environment row, or null
 
   useEffect(() => { api.get('/admin/servers').then(r => setServers(r.data)).catch(() => {}); }, []);
+
+  const loadSchedules = () => {
+    api.get('/monitoring/schedules').then(r => {
+      const map = {};
+      r.data.forEach(s => { map[s.environment_id] = s; });
+      setSchedules(map);
+    }).catch(() => {});
+  };
+
+  useEffect(() => { loadSchedules(); }, []);
+
+  const saveSchedule = async (envId, patch) => {
+    const current = schedules[envId] || { enabled: false, interval_minutes: 60 };
+    setSavingSchedule(envId);
+    try {
+      const r = await api.put(`/monitoring/schedules/${envId}`, {
+        enabled: current.enabled, interval_minutes: current.interval_minutes || 60, ...patch,
+      });
+      setSchedules(s => ({ ...s, [envId]: r.data }));
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message);
+    } finally {
+      setSavingSchedule(null);
+    }
+  };
 
   const blank = {
     name: '', tier: 'nonprod', db_host: '', db_port: 1521, db_sid: '', db_user: 'apps',
@@ -614,9 +695,11 @@ function EnvironmentsTab() {
 
       <p className="admin-muted">The <strong>tier</strong> classifies an environment for the cloning production guard. Use ⚡ Test to capture the live DBID / global_name.</p>
       <table className="admin-table">
-        <thead><tr><th>Name</th><th>Tier</th><th>DB Host</th><th>SID</th><th>Identity (DBID)</th><th>Secret</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Tier</th><th>DB Host</th><th>SID</th><th>Identity (DBID)</th><th>Secret</th><th>Monitoring</th><th></th></tr></thead>
         <tbody>
-          {rows.map(e => (
+          {rows.map(e => {
+            const sched = schedules[e.id];
+            return (
             <tr key={e.id}>
               <td>{e.name}</td>
               <td>{e.tier === 'prod'
@@ -626,15 +709,40 @@ function EnvironmentsTab() {
               <td>{e.db_sid || '—'}</td>
               <td>{e.db_id ? <span className="admin-muted">{e.db_id}</span> : '—'}</td>
               <td>{e.has_password ? '🔒 set' : '—'}</td>
+              <td>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={!!sched?.enabled}
+                    disabled={savingSchedule === e.id}
+                    onChange={ev => saveSchedule(e.id, { enabled: ev.target.checked })} />
+                  <select style={{ fontSize: '0.75rem' }} value={sched?.interval_minutes || 60}
+                    disabled={savingSchedule === e.id || !sched?.enabled}
+                    onChange={ev => saveSchedule(e.id, { interval_minutes: parseInt(ev.target.value) })}>
+                    <option value={15}>15 min</option>
+                    <option value={30}>30 min</option>
+                    <option value={60}>1 hr</option>
+                    <option value={360}>6 hr</option>
+                    <option value={1440}>24 hr</option>
+                  </select>
+                </label>
+                {sched?.last_run_status === 'error' && (
+                  <div className="admin-muted" style={{ color: '#BF4A3C', fontSize: '0.7rem' }} title={sched.last_error}>
+                    last scan failed
+                  </div>
+                )}
+              </td>
               <td className="admin-actions">
                 <button onClick={() => runTest(e.id)} title="Test connection">⚡</button>
+                <button onClick={() => setPatchTargetsEnv(e)} title="Patch targets (patch gap analysis)"><ShieldAlert size={14} /></button>
+                <button onClick={() => setPatchFileScanEnv(e)} title="File-version scan configs (ad_files/ad_file_versions vs filesystem)"><FileSearch size={14} /></button>
+                <button onClick={() => setNlSqlEnv(e)} title="NL-SQL setup (extract schema + fine-tune)"><MessageCircleQuestion size={14} /></button>
                 <button onClick={() => setForm({ ...e, db_password: '', system_password: '', weblogic_password: '' })}><Pencil size={14} /></button>
                 <button onClick={() => remove(e.id)}><Trash2 size={14} /></button>
                 <TestResult result={test[e.id]} />
               </td>
             </tr>
-          ))}
-          {rows.length === 0 && !loading && <tr><td colSpan={7} className="admin-muted">No environments.</td></tr>}
+            );
+          })}
+          {rows.length === 0 && !loading && <tr><td colSpan={8} className="admin-muted">No environments.</td></tr>}
         </tbody>
       </table>
 
@@ -697,6 +805,333 @@ function EnvironmentsTab() {
           </Field>
         </FormModal>
       )}
+
+      {patchTargetsEnv && (
+        <PatchTargetsModal environment={patchTargetsEnv} onClose={() => setPatchTargetsEnv(null)} />
+      )}
+      {patchFileScanEnv && (
+        <PatchFileScanConfigsModal environment={patchFileScanEnv} onClose={() => setPatchFileScanEnv(null)} />
+      )}
+      {nlSqlEnv && (
+        <NlSqlSetupModal environment={nlSqlEnv} onClose={() => setNlSqlEnv(null)} />
+      )}
+    </div>
+  );
+}
+
+const PATCH_COMPONENTS = ['db_home', 'grid', 'weblogic', 'fmw_homes', 'adop'];
+
+function PatchTargetsModal({ environment, onClose }) {
+  const { rows, error, loading, reload, setError } = useResource(`/admin/patch-targets?environment_id=${environment.id}`);
+  const [form, setForm] = useState(null);   // { component, home_path, patchesText }
+
+  const blank = { component: PATCH_COMPONENTS[0], home_path: '', patchesText: '' };
+
+  const parsePatches = (text) => text.split(/[,\s]+/).filter(Boolean).map(p => ({ patch_number: p, label: p }));
+
+  const save = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/admin/patch-targets', {
+        environment_id: environment.id, component: form.component,
+        home_path: form.home_path || null, target_patches: parsePatches(form.patchesText),
+      });
+      setForm(null); reload();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Remove this patch target?')) return;
+    try { await api.delete(`/admin/patch-targets/${id}`); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <div className="admin-form" onMouseDown={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+        <div className="admin-form-header">
+          <h4>Patch Targets — {environment.name}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          <p className="admin-muted">
+            The baseline used by the Patch Gap tab (EBS Patching Agent → Patch Gap) — one entry per
+            component, with the patch numbers it should have applied. <strong>adop</strong> is checked
+            live against <code>ad_bugs</code> in the EBS database (application-tier bug fixes/RUPs,
+            not visible to OPatch) — its home path is ignored.
+          </p>
+          {error && <p className="admin-error">{error}</p>}
+          <table className="admin-table">
+            <thead><tr><th>Component</th><th>Home</th><th>Target patches</th><th></th></tr></thead>
+            <tbody>
+              {rows.map(t => (
+                <tr key={t.id}>
+                  <td>{t.component}</td>
+                  <td className="admin-muted" style={{ fontSize: '0.75rem' }}>{t.home_path || '—'}</td>
+                  <td>{(t.target_patches || []).map(p => p.patch_number).join(', ') || '—'}</td>
+                  <td className="admin-actions"><button onClick={() => remove(t.id)}><Trash2 size={14} /></button></td>
+                </tr>
+              ))}
+              {rows.length === 0 && !loading && <tr><td colSpan={4} className="admin-muted">No patch targets yet.</td></tr>}
+            </tbody>
+          </table>
+
+          {form ? (
+            <form onSubmit={save} style={{ marginTop: '0.8rem', borderTop: '1px solid #FFFFFF', paddingTop: '0.8rem' }}>
+              <div className="admin-row">
+                <Field label="Component">
+                  <select value={form.component} onChange={e => setForm({ ...form, component: e.target.value })}>
+                    {PATCH_COMPONENTS.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </Field>
+                <Field label="OPatch home path">
+                  <input value={form.home_path} placeholder="/u01/oracle/db_home"
+                    onChange={e => setForm({ ...form, home_path: e.target.value })} />
+                </Field>
+              </div>
+              <Field label="Target patch numbers (comma or space separated)">
+                <input value={form.patchesText} placeholder="37123456, 38999999"
+                  onChange={e => setForm({ ...form, patchesText: e.target.value })} />
+              </Field>
+              <div className="admin-form-footer" style={{ padding: '0.6rem 0 0' }}>
+                <button type="button" className="admin-btn-ghost" onClick={() => setForm(null)}>Cancel</button>
+                <button type="submit" className="admin-btn-primary">Add</button>
+              </div>
+            </form>
+          ) : (
+            <button className="admin-btn-primary" style={{ marginTop: '0.8rem' }} onClick={() => setForm({ ...blank })}>
+              <Plus size={14} /> Add component target
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PatchFileScanConfigsModal({ environment, onClose }) {
+  const { rows, error, loading, reload, setError } = useResource(`/admin/patch-file-scan-configs?environment_id=${environment.id}`);
+  const [form, setForm] = useState(null);   // { label, run_fs_path, globsText, notes }
+  const [scanning, setScanning] = useState(null);
+  const [scanMsg, setScanMsg] = useState('');
+
+  const blank = { label: '', run_fs_path: '', globsText: '*.pls, *.pkb, *.pks, *.sql, *.fmb, *.rdf, *.java', notes: '' };
+
+  const parseGlobs = (text) => text.split(/[,\s]+/).filter(Boolean);
+
+  const save = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/admin/patch-file-scan-configs', {
+        environment_id: environment.id, label: form.label || null, run_fs_path: form.run_fs_path,
+        file_globs: parseGlobs(form.globsText), notes: form.notes || null,
+      });
+      setForm(null); reload();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('Remove this file scan config?')) return;
+    try { await api.delete(`/admin/patch-file-scan-configs/${id}`); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const scanNow = async (id) => {
+    setScanning(id); setScanMsg('');
+    try {
+      await api.post(`/patching/gap/files/scan/${id}`);
+      setScanMsg('Scan started — mismatches will appear in the Findings feed shortly.');
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+    finally { setScanning(null); }
+  };
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <div className="admin-form" onMouseDown={e => e.stopPropagation()} style={{ maxWidth: 680 }}>
+        <div className="admin-form-header">
+          <h4>File-Version Scan Configs — {environment.name}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          <p className="admin-muted">
+            Each config scans the WHOLE run-edition filesystem in one pass — every product top beneath
+            it (ap/, gl/, fnd/, ...) — comparing each file's embedded <code>$Header</code> version
+            against <code>AD_FILES</code>/<code>AD_FILE_VERSIONS</code>. Mismatches (or files not
+            registered in AD_FILES) appear as Findings, grouped by product.
+          </p>
+          {error && <p className="admin-error">{error}</p>}
+          {scanMsg && <p className="admin-muted" style={{ color: '#3C7A5B' }}>{scanMsg}</p>}
+          <table className="admin-table">
+            <thead><tr><th>Label</th><th>Run FS path</th><th>File globs</th><th></th></tr></thead>
+            <tbody>
+              {rows.map(c => (
+                <tr key={c.id}>
+                  <td>{c.label || '—'}</td>
+                  <td className="admin-muted" style={{ fontSize: '0.75rem' }}>{c.run_fs_path}</td>
+                  <td className="admin-muted" style={{ fontSize: '0.75rem' }}>{(c.file_globs || []).join(', ')}</td>
+                  <td className="admin-actions">
+                    <button onClick={() => scanNow(c.id)} disabled={scanning === c.id} title="Scan now">
+                      {scanning === c.id ? '…' : <FileSearch size={14} />}
+                    </button>
+                    <button onClick={() => remove(c.id)}><Trash2 size={14} /></button>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && !loading && <tr><td colSpan={4} className="admin-muted">No file scan configs yet.</td></tr>}
+            </tbody>
+          </table>
+
+          {form ? (
+            <form onSubmit={save} style={{ marginTop: '0.8rem', borderTop: '1px solid #FFFFFF', paddingTop: '0.8rem' }}>
+              <div className="admin-row">
+                <Field label="Label (optional)">
+                  <input value={form.label} placeholder="Run edition APPL_TOP"
+                    onChange={e => setForm({ ...form, label: e.target.value })} />
+                </Field>
+                <Field label="Run filesystem path">
+                  <input value={form.run_fs_path} placeholder="/u01/install/APPS/apps/apps_st/appl"
+                    onChange={e => setForm({ ...form, run_fs_path: e.target.value })} />
+                </Field>
+              </div>
+              <Field label="File globs (comma or space separated)">
+                <input value={form.globsText}
+                  onChange={e => setForm({ ...form, globsText: e.target.value })} />
+              </Field>
+              <Field label="Notes (optional)">
+                <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} />
+              </Field>
+              <div className="admin-form-footer" style={{ padding: '0.6rem 0 0' }}>
+                <button type="button" className="admin-btn-ghost" onClick={() => setForm(null)}>Cancel</button>
+                <button type="submit" className="admin-btn-primary" disabled={!form.run_fs_path}>Add</button>
+              </div>
+            </form>
+          ) : (
+            <button className="admin-btn-primary" style={{ marginTop: '0.8rem' }} onClick={() => setForm({ ...blank })}>
+              <Plus size={14} /> Add scan config
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NlSqlSetupModal({ environment, onClose }) {
+  const [schema, setSchema] = useState(null);
+  const [train, setTrain] = useState(null);
+  const [error, setError] = useState('');
+  const [extracting, setExtracting] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [mock, setMock] = useState(false);
+  const [extraOwners, setExtraOwners] = useState('');
+  const [steps, setSteps] = useState(300);
+  const [nTrain, setNTrain] = useState(800);
+
+  const loadSchema = () => {
+    api.get(`/nl-sql/schema/${environment.id}`).then(r => setSchema(r.data)).catch(() => {});
+  };
+  const loadTrain = () => {
+    api.get(`/nl-sql/train/${environment.id}/status`).then(r => setTrain(r.data)).catch(() => {});
+  };
+
+  useEffect(() => { loadSchema(); loadTrain(); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (schema?.status !== 'error' && !['ok', 'never_extracted'].includes(schema?.status)) return;
+    if (!extracting) return;
+    const t = setInterval(loadSchema, 3000);
+    return () => clearInterval(t);
+  }, [extracting, schema]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!training && train?.status !== 'running' && train?.status !== 'pending') return;
+    const t = setInterval(loadTrain, 3000);
+    return () => clearInterval(t);
+  }, [training, train]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const extractNow = async () => {
+    setExtracting(true); setError('');
+    try {
+      await api.post(`/nl-sql/extract/${environment.id}`, {
+        mock, extra_owners: extraOwners.split(',').map(s => s.trim()).filter(Boolean),
+      });
+      setTimeout(loadSchema, 2000);
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+    } finally {
+      setTimeout(() => setExtracting(false), 2500);
+    }
+  };
+
+  const trainNow = async () => {
+    setTraining(true); setError('');
+    try {
+      await api.post(`/nl-sql/train/${environment.id}`, { steps, n_train: nTrain });
+      setTimeout(loadTrain, 2000);
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+    } finally {
+      setTimeout(() => setTraining(false), 2500);
+    }
+  };
+
+  const trainBusy = train?.status === 'pending' || train?.status === 'running';
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <div className="admin-form" onMouseDown={e => e.stopPropagation()} style={{ maxWidth: 640 }}>
+        <div className="admin-form-header">
+          <h4>NL-SQL Setup — {environment.name}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          <p className="admin-muted">
+            Extract this environment's live schema, then fine-tune a per-environment TinyLLM
+            checkpoint on it for much better NL→SQL accuracy than the generic base model.
+          </p>
+          {error && <p className="admin-error">{error}</p>}
+
+          <h5 style={{ marginBottom: '0.3rem' }}>1. Schema extraction</h5>
+          {schema && (
+            <p className="admin-muted">
+              Status: <strong>{schema.status}</strong>
+              {schema.table_count != null && ` · ${schema.table_count} tables, ${schema.fk_count} FKs`}
+              {schema.scanned_at && ` · ${new Date(schema.scanned_at).toLocaleString()}`}
+            </p>
+          )}
+          {schema?.scan_error && <p className="admin-error">{schema.scan_error}</p>}
+          <div className="admin-row">
+            <Field label="Extra owners (comma-separated, e.g. XXCUST)">
+              <input value={extraOwners} onChange={e => setExtraOwners(e.target.value)} />
+            </Field>
+            <Field label="Use demo schema (mock, no live DB)">
+              <input type="checkbox" checked={mock} onChange={e => setMock(e.target.checked)} />
+            </Field>
+          </div>
+          <button className="admin-btn-primary" onClick={extractNow} disabled={extracting}>
+            {extracting ? 'Extracting…' : 'Extract Now'}
+          </button>
+
+          <h5 style={{ margin: '1rem 0 0.3rem' }}>2. Fine-tune</h5>
+          {train && (
+            <p className="admin-muted">
+              Latest run: <strong>{train.status}</strong>
+              {train.current_step != null && ` · step ${train.current_step}/${train.total_steps}`}
+              {train.error && ` · ${train.error}`}
+            </p>
+          )}
+          <div className="admin-row">
+            <Field label="Steps"><input type="number" value={steps} onChange={e => setSteps(parseInt(e.target.value) || 300)} /></Field>
+            <Field label="Training examples"><input type="number" value={nTrain} onChange={e => setNTrain(parseInt(e.target.value) || 800)} /></Field>
+          </div>
+          <button className="admin-btn-primary" onClick={trainNow} disabled={trainBusy || training}>
+            {trainBusy ? 'Training…' : 'Fine-tune Now'}
+          </button>
+          <p className="admin-muted" style={{ fontSize: '0.72rem', marginTop: '0.4rem' }}>
+            Takes a few minutes on CPU. Requires a successful schema extraction first.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1655,6 +2090,225 @@ function AuditTab({ currentUser = {} }) {
       {view === 'users' && <UserAuditView />}
       {view === 'agents' && <AgentAuditView />}
       {view === 'clones' && <CloneAuditView currentUser={currentUser} />}
+    </div>
+  );
+}
+
+const TICKET_STATUSES = ['open', 'in_progress', 'resolved', 'dismissed'];
+const TICKET_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+
+function TicketsTab() {
+  const _blank = { status_filter: 'open', priority: '', environment_id: '' };
+  const [filter, setFilter] = useState(_blank);
+  const [environments, setEnvironments] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [editId, setEditId] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const { rows, error, loading, reload } = useResource('/tickets/' + buildQs(filter));
+
+  useEffect(() => {
+    api.get('/config/environments').then(r => setEnvironments(r.data)).catch(() => {});
+    api.get('/admin/users').then(r => setUsers(r.data)).catch(() => {});
+  }, []);
+
+  const userName = (id) => users.find(u => u.id === id)?.username || (id ? `#${id}` : '—');
+  const envName = (t) => t.environment_name || '—';
+
+  const statusBadge = (s) =>
+    s === 'resolved' ? <span className="admin-pill ok">resolved</span>
+      : s === 'dismissed' ? <span className="admin-pill off">dismissed</span>
+        : s === 'in_progress' ? <span className="admin-pill pend">in progress</span>
+          : <span className="admin-pill admin">open</span>;
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>Tickets {loading && <span className="admin-muted">· loading…</span>}</h4>
+        <button className="admin-btn-primary" onClick={() => setCreating(true)}><Plus size={14} /> New Ticket</button>
+      </div>
+      <p className="admin-muted">
+        Work items tracked to resolution — created manually or converted from a diagnostic
+        Finding (Findings feed → Convert to Ticket).
+      </p>
+      {error && <p className="admin-error">{error}</p>}
+      <div style={_filterBar}>
+        <FilterLabel label="Status">
+          <select style={_fs} value={filter.status_filter}
+            onChange={e => setFilter(f => ({ ...f, status_filter: e.target.value }))}>
+            <option value="">All</option>
+            {TICKET_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FilterLabel>
+        <FilterLabel label="Priority">
+          <select style={_fs} value={filter.priority}
+            onChange={e => setFilter(f => ({ ...f, priority: e.target.value }))}>
+            <option value="">All</option>
+            {TICKET_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </FilterLabel>
+        <FilterLabel label="Environment">
+          <select style={_fs} value={filter.environment_id}
+            onChange={e => setFilter(f => ({ ...f, environment_id: e.target.value }))}>
+            <option value="">All</option>
+            {environments.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </FilterLabel>
+        <button className="admin-btn-ghost" onClick={reload}>Refresh</button>
+      </div>
+      <table className="admin-table">
+        <thead><tr>
+          <th>Title</th><th>Environment</th><th>Priority</th><th>Status</th>
+          <th>Assignee</th><th>Created</th><th></th>
+        </tr></thead>
+        <tbody>
+          {rows.map(t => (
+            <tr key={t.id} style={{ cursor: 'pointer' }} onClick={() => setEditId(t.id)}>
+              <td>{t.title}{t.finding_id ? <span className="admin-muted" title="Converted from a diagnostic finding"> 🔔</span> : null}</td>
+              <td className="admin-muted">{envName(t)}</td>
+              <td>{t.priority}</td>
+              <td>{statusBadge(t.status)}</td>
+              <td className="admin-muted">{userName(t.assignee_id)}</td>
+              <td className="admin-muted">{ago(t.created_at)}</td>
+              <td className="admin-actions"><Pencil size={14} /></td>
+            </tr>
+          ))}
+          {rows.length === 0 && !loading && <tr><td colSpan={7} className="admin-muted">No tickets match these filters.</td></tr>}
+        </tbody>
+      </table>
+      {editId != null && (
+        <TicketEditModal id={editId} users={users} onClose={() => setEditId(null)}
+          onSaved={() => { setEditId(null); reload(); }} />
+      )}
+      {creating && (
+        <TicketCreateModal environments={environments} users={users} onClose={() => setCreating(false)}
+          onCreated={() => { setCreating(false); reload(); }} />
+      )}
+    </div>
+  );
+}
+
+function TicketCreateModal({ environments, users, onClose, onCreated }) {
+  const [form, setForm] = useState({ title: '', description: '', priority: 'medium', environment_id: '', assignee_id: '' });
+  const [error, setError] = useState('');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post('/tickets/', {
+        title: form.title, description: form.description || null, priority: form.priority,
+        environment_id: form.environment_id || null, assignee_id: form.assignee_id || null,
+      });
+      onCreated();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  return (
+    <FormModal title="New Ticket" onClose={onClose} onSubmit={submit}>
+      {error && <p className="admin-error">{error}</p>}
+      <Field label="Title"><input value={form.title} required onChange={e => setForm({ ...form, title: e.target.value })} /></Field>
+      <Field label="Description">
+        <textarea rows={3} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+      </Field>
+      <div className="admin-row">
+        <Field label="Priority">
+          <select value={form.priority} onChange={e => setForm({ ...form, priority: e.target.value })}>
+            {TICKET_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="Environment">
+          <select value={form.environment_id} onChange={e => setForm({ ...form, environment_id: e.target.value })}>
+            <option value="">— none —</option>
+            {environments.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Assignee">
+        <select value={form.assignee_id} onChange={e => setForm({ ...form, assignee_id: e.target.value })}>
+          <option value="">— unassigned —</option>
+          {users.map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+        </select>
+      </Field>
+    </FormModal>
+  );
+}
+
+function TicketEditModal({ id, users, onClose, onSaved }) {
+  const [t, setT] = useState(null);
+  const [status, setStatus] = useState('');
+  const [priority, setPriority] = useState('');
+  const [assigneeId, setAssigneeId] = useState('');
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get(`/tickets/${id}`).then(r => {
+      setT(r.data);
+      setStatus(r.data.status);
+      setPriority(r.data.priority);
+      setAssigneeId(r.data.assignee_id || '');
+      setResolutionNotes(r.data.resolution_notes || '');
+    }).catch(e => setError(e.response?.data?.detail || e.message));
+  }, [id]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true); setError('');
+    try {
+      await api.patch(`/tickets/${id}`, {
+        status, priority, assignee_id: assigneeId || null, resolution_notes: resolutionNotes || null,
+      });
+      onSaved();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+    finally { setSaving(false); }
+  };
+
+  const needsNotes = (status === 'resolved' || status === 'dismissed') && !resolutionNotes.trim();
+
+  return (
+    <div className="admin-form-overlay" onMouseDown={onClose}>
+      <form className="admin-form" onSubmit={save} onMouseDown={e => e.stopPropagation()}>
+        <div className="admin-form-header">
+          <h4>Ticket #{id}</h4>
+          <button type="button" className="admin-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="admin-form-body">
+          {error && <p className="admin-error">{error}</p>}
+          {!t && !error && <p className="admin-muted">Loading…</p>}
+          {t && (
+            <>
+              <p style={{ fontWeight: 600 }}>{t.title}</p>
+              {t.description && <p className="admin-muted">{t.description}</p>}
+              {t.environment_name && <p className="admin-muted">Environment: {t.environment_name}</p>}
+              <div className="admin-row">
+                <Field label="Status">
+                  <select value={status} onChange={e => setStatus(e.target.value)}>
+                    {TICKET_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </Field>
+                <Field label="Priority">
+                  <select value={priority} onChange={e => setPriority(e.target.value)}>
+                    {TICKET_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Assignee">
+                <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)}>
+                  <option value="">— unassigned —</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+                </select>
+              </Field>
+              <Field label={`Resolution notes${needsNotes ? ' (required to close)' : ''}`}>
+                <textarea rows={3} value={resolutionNotes} onChange={e => setResolutionNotes(e.target.value)} />
+              </Field>
+            </>
+          )}
+        </div>
+        <div className="admin-form-footer">
+          <button type="button" className="admin-btn-ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="admin-btn-primary" disabled={saving || !t || needsNotes}>Save</button>
+        </div>
+      </form>
     </div>
   );
 }

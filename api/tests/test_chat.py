@@ -1,6 +1,14 @@
 """TC-CH-01 to TC-CH-13 — Chat Agent: Conversational EBS Assistant"""
 import pytest
 from conftest import parse_sse, chat_session
+from app.modules.dba.nl_sql import nl_sql_service
+from app.core.audit import audit_service
+
+
+def _fake_propose(db, env, question):
+    return {"sql": "SELECT COUNT(*) FROM ap_suppliers", "graph_valid": True,
+           "constrained": True, "explain_ok": None, "note": "", "tables_used": ["ap_suppliers"],
+           "schema_id": f"env_{env.id}", "question": question, "requires_confirmation": True, "executed": False}
 
 
 class TestChatSessions:
@@ -167,3 +175,105 @@ class TestChatStreaming:
             headers={**admin_headers, "X-LLM-Provider": "ollama"},
         )
         assert r.status_code == 404
+
+
+class TestChatNlSqlIntent:
+    """Data-question intent — propose SQL inline in chat, confirm to execute,
+    without switching to the dedicated NL-SQL agent panel."""
+
+    def _post(self, client, session_id, content, headers):
+        r = client.post(
+            f"/chat/sessions/{session_id}/stream",
+            json={"content": content},
+            headers={**headers, "X-LLM-Provider": "ollama"},
+        )
+        content_text = "".join(e for e in parse_sse(r.text) if isinstance(e, str)).lower()
+        return r, content_text
+
+    def test_data_question_without_environment_asks_which_one(self, client, admin_headers, mock_llm, mock_rag, nonprod_env):
+        session_id = chat_session(client, admin_headers)
+        r, text = self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        assert r.status_code == 200
+        assert "which environment" in text
+
+    def test_ordinary_message_does_not_trigger_nlsql(self, client, admin_headers, mock_llm, mock_rag):
+        """A message with none of the data-question markers must not be
+        hijacked — normal chat proceeds unaffected."""
+        session_id = chat_session(client, admin_headers)
+        r, text = self._post(client, session_id, "How do I compile a PL/SQL package in Oracle EBS?", admin_headers)
+        assert r.status_code == 200
+        assert "nl-sql agent" not in text
+        assert "which environment" not in text
+
+    def test_followup_naming_environment_proposes_sql(self, client, admin_headers, mock_llm, mock_rag, nonprod_env, monkeypatch):
+        monkeypatch.setattr(nl_sql_service, "propose", _fake_propose)
+        session_id = chat_session(client, admin_headers)
+        self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        r, text = self._post(client, session_id, nonprod_env["name"], admin_headers)
+        assert r.status_code == 200
+        assert "proposed sql" in text
+        assert "select count(*) from ap_suppliers" in text
+        assert "run it" in text
+
+    def test_proposal_hides_technical_detail_by_default(self, client, admin_headers, mock_llm, mock_rag, nonprod_env, monkeypatch):
+        """Regular chat replies stay plain-English unless an admin opts into
+        the diagnostic detail — see NlSqlChatSettings."""
+        monkeypatch.setattr(nl_sql_service, "propose", _fake_propose)
+        session_id = chat_session(client, admin_headers)
+        self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        r, text = self._post(client, session_id, nonprod_env["name"], admin_headers)
+        assert r.status_code == 200
+        assert "schema-valid" not in text
+        assert "explain-ok" not in text
+
+    def test_proposal_shows_technical_detail_when_admin_enables_it(self, client, admin_headers, mock_llm, mock_rag, nonprod_env, monkeypatch):
+        monkeypatch.setattr(nl_sql_service, "propose", _fake_propose)
+        r = client.put("/admin/nl-sql-chat-settings", json={"show_technical_details": True}, headers=admin_headers)
+        assert r.status_code == 200
+
+        session_id = chat_session(client, admin_headers)
+        self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        r2, text = self._post(client, session_id, nonprod_env["name"], admin_headers)
+        assert r2.status_code == 200
+        assert "schema-valid" in text
+        assert "explain-ok" in text
+
+    def test_confirm_executes_the_proposed_sql(self, client, admin_headers, mock_llm, mock_rag, nonprod_env, monkeypatch):
+        monkeypatch.setattr(nl_sql_service, "propose", _fake_propose)
+        captured = {}
+
+        def _fake_execute(env, sql, max_rows=50):
+            captured["env"] = env.name
+            captured["sql"] = sql
+            captured["max_rows"] = max_rows
+            return [[42]]
+        monkeypatch.setattr(nl_sql_service, "execute", _fake_execute)
+
+        session_id = chat_session(client, admin_headers)
+        self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        self._post(client, session_id, nonprod_env["name"], admin_headers)
+        r, text = self._post(client, session_id, "run it", admin_headers)
+
+        assert r.status_code == 200
+        assert captured["sql"] == "SELECT COUNT(*) FROM ap_suppliers"
+        assert captured["env"] == nonprod_env["name"]
+        assert captured["max_rows"] == 50
+        assert "42" in text
+
+    def test_data_question_without_nl_sql_grant_is_declined(self, client, admin_headers, regular_user_headers, mock_llm, mock_rag, nonprod_env):
+        session_id = chat_session(client, regular_user_headers)
+        r, text = self._post(client, session_id, "how many suppliers do we have", regular_user_headers)
+        assert r.status_code == 200
+        assert "nl→sql agent" in text or "grant" in text
+        assert "which environment" not in text
+
+    def test_propose_is_audit_logged_with_nl_sql_agent(self, client, admin_headers, mock_llm, mock_rag, nonprod_env, monkeypatch):
+        monkeypatch.setattr(nl_sql_service, "propose", _fake_propose)
+        logged = []
+        monkeypatch.setattr(audit_service, "log", lambda *a, **kw: logged.append((a, kw)))
+
+        session_id = chat_session(client, admin_headers)
+        self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        self._post(client, session_id, nonprod_env["name"], admin_headers)
+
+        assert any(kw.get("agent") == "nl_sql" for _, kw in logged)

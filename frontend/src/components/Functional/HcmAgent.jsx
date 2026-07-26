@@ -25,6 +25,7 @@ export default function HcmAgent({ onClose }) {
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState(null);
   const [source, setSource] = useState('');
+  const [generatedSql, setGeneratedSql] = useState('');
   const [question, setQuestion] = useState('');
   const analysisRef = useRef(null);
   const readerRef = useRef(null);
@@ -103,7 +104,7 @@ export default function HcmAgent({ onClose }) {
 
   const handleEvent = (evt) => {
     if (evt.type === 'phase') setPhase(evt.content);
-    if (evt.type === 'data') { setRows(evt.rows || []); setSource(evt.source || ''); }
+    if (evt.type === 'data') { setRows(evt.rows || []); setSource(evt.source || ''); setGeneratedSql(evt.sql || ''); }
     if (evt.type === 'analysis_token') setAnalysisText(prev => prev + evt.content);
     if (evt.type === 'analysis_complete') setStatus('complete');
     if (evt.type === 'error') { setPhase(`❌ ${evt.content}`); setStatus('error'); }
@@ -111,7 +112,7 @@ export default function HcmAgent({ onClose }) {
 
   const runInquiry = async () => {
     if (running || !inquiryId) return;
-    setRunning(true); setStatus('running'); setPhase(''); setAnalysisText(''); setRows(null); setSource('');
+    setRunning(true); setStatus('running'); setPhase(''); setAnalysisText(''); setRows(null); setSource(''); setGeneratedSql('');
     const token = localStorage.getItem('session_token');
     try {
       const resp = await fetch(`${api.defaults.baseURL}/hcm/inquiry`, {
@@ -136,13 +137,13 @@ export default function HcmAgent({ onClose }) {
 
   const runAsk = async () => {
     if (running || !question.trim()) return;
-    setRunning(true); setStatus('running'); setPhase(''); setAnalysisText(''); setRows(null);
+    setRunning(true); setStatus('running'); setPhase(''); setAnalysisText(''); setRows(null); setGeneratedSql('');
     const token = localStorage.getItem('session_token');
     try {
       const resp = await fetch(`${api.defaults.baseURL}/hcm/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...getLLMHeaders() },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, environment: selectedEnv || null }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       await readStream(resp, handleEvent);
@@ -171,12 +172,12 @@ export default function HcmAgent({ onClose }) {
 
         <div className="perf-mode-tabs">
           <button className={`perf-mode-tab ${mode === 'inquiry' ? 'active' : ''}`}
-            onClick={() => { if (!running) { setMode('inquiry'); setAnalysisText(''); setPhase(''); setStatus('idle'); } }}
+            onClick={() => { if (!running) { setMode('inquiry'); setAnalysisText(''); setPhase(''); setStatus('idle'); setRows(null); setGeneratedSql(''); } }}
             disabled={running}>
             🔎 Inquiry
           </button>
           <button className={`perf-mode-tab ${mode === 'ask' ? 'active' : ''}`}
-            onClick={() => { if (!running) { setMode('ask'); setAnalysisText(''); setPhase(''); setStatus('idle'); setRows(null); } }}
+            onClick={() => { if (!running) { setMode('ask'); setAnalysisText(''); setPhase(''); setStatus('idle'); setRows(null); setGeneratedSql(''); } }}
             disabled={running}>
             💬 Ask (Advisor)
           </button>
@@ -185,101 +186,112 @@ export default function HcmAgent({ onClose }) {
         <div className="perf-body">
           {/* Left panel */}
           <div className="perf-left">
-            {mode === 'inquiry' ? (
-              <div className="perf-config">
-                <div>
-                  <div className="perf-config-label">Target Environment</div>
-                  {environments.length > 0 ? (
-                    <select className="perf-env-select" value={selectedEnv}
-                      onChange={e => setSelectedEnv(e.target.value)} disabled={running}>
-                      {environments.map(env => (
-                        <option key={env.name} value={env.name}>{env.name} — {env.db_host || 'No host'}</option>
-                      ))}
+            <div className="perf-config">
+              <div>
+                <div className="perf-config-label">Target Environment</div>
+                {environments.length > 0 ? (
+                  <select className="perf-env-select" value={selectedEnv}
+                    onChange={e => setSelectedEnv(e.target.value)} disabled={running}>
+                    {environments.map(env => (
+                      <option key={env.name} value={env.name}>{env.name} — {env.db_host || 'No host'}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="hcm-note">
+                    {mode === 'inquiry' ? 'No environments configured — inquiries run on simulated data.'
+                                         : 'No environments configured — live-data questions use general advice only.'}
+                  </div>
+                )}
+              </div>
+
+              {mode === 'inquiry' ? (
+                <>
+                  <div>
+                    <div className="perf-config-label">Inquiry</div>
+                    <select className="perf-env-select" value={inquiryId}
+                      onChange={e => onInquiryChange(e.target.value)} disabled={running}>
+                      {catalog.map(q => <option key={q.id} value={q.id}>{q.label}</option>)}
                     </select>
+                    {selectedInquiry && <div className="hcm-inquiry-desc">{selectedInquiry.description}</div>}
+                  </div>
+
+                  {(selectedInquiry?.params || []).map(p => (
+                    <div key={p.name}>
+                      <div className="perf-config-label">
+                        {p.label}{p.required ? ' *' : ''}
+                      </div>
+                      <input
+                        className="hcm-input"
+                        type="text"
+                        value={params[p.name] ?? ''}
+                        placeholder={p.help || (p.required ? 'required' : 'optional')}
+                        onChange={e => setParams(prev => ({ ...prev, [p.name]: e.target.value }))}
+                        disabled={running}
+                      />
+                    </div>
+                  ))}
+
+                  {running ? (
+                    <button className="btn-outline perf-run-btn" onClick={stop}><X size={15} /> Stop</button>
                   ) : (
-                    <div className="hcm-note">No environments configured — inquiries run on simulated data.</div>
+                    <button className="btn-primary perf-run-btn" onClick={runInquiry} disabled={!inquiryId}>
+                      <Search size={15} /> Run Inquiry
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="perf-config-label">Ask an HCM / Payroll functional question</div>
+                  <textarea
+                    className="hcm-input hcm-textarea"
+                    rows={6}
+                    value={question}
+                    placeholder="e.g. What is the Oracle EBS payroll process flow from run to GL transfer?"
+                    onChange={e => setQuestion(e.target.value)}
+                    disabled={running}
+                  />
+                  {running ? (
+                    <button className="btn-outline perf-run-btn" onClick={stop}><X size={15} /> Stop</button>
+                  ) : (
+                    <button className="btn-primary perf-run-btn" onClick={runAsk} disabled={!question.trim()}>
+                      💬 Ask
+                    </button>
+                  )}
+                  <div className="hcm-note">
+                    Read-only advisor — grounded in the knowledge base when a match is found; live-data questions
+                    (e.g. "how many...", "top 10...") are answered via NL→SQL when an environment is selected.
+                  </div>
+                </>
+              )}
+
+              {rows && (
+                <div className="hcm-results">
+                  <div className="hcm-results-head">
+                    Results — {rows.length} row{rows.length === 1 ? '' : 's'}
+                    <span className={`hcm-source-badge ${source}`}>
+                      {source === 'live' ? '🟢 live' : source === 'nl_sql' ? '🤖 nl-sql' : '🧪 simulated'}
+                    </span>
+                  </div>
+                  {generatedSql && <pre className="hcm-generated-sql">{generatedSql}</pre>}
+                  {rows.length > 0 ? (
+                    <div className="hcm-table-wrap">
+                      <table className="perf-metric-table">
+                        <thead><tr>{columns.map(c => <th key={c}>{c}</th>)}</tr></thead>
+                        <tbody>
+                          {rows.slice(0, 50).map((r, i) => (
+                            <tr key={i}>
+                              {columns.map(c => <td key={c} title={String(r[c] ?? '')}>{String(r[c] ?? '')}</td>)}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="hcm-note">No rows returned. Try a different parameter or effective date.</div>
                   )}
                 </div>
-
-                <div>
-                  <div className="perf-config-label">Inquiry</div>
-                  <select className="perf-env-select" value={inquiryId}
-                    onChange={e => onInquiryChange(e.target.value)} disabled={running}>
-                    {catalog.map(q => <option key={q.id} value={q.id}>{q.label}</option>)}
-                  </select>
-                  {selectedInquiry && <div className="hcm-inquiry-desc">{selectedInquiry.description}</div>}
-                </div>
-
-                {(selectedInquiry?.params || []).map(p => (
-                  <div key={p.name}>
-                    <div className="perf-config-label">
-                      {p.label}{p.required ? ' *' : ''}
-                    </div>
-                    <input
-                      className="hcm-input"
-                      type="text"
-                      value={params[p.name] ?? ''}
-                      placeholder={p.help || (p.required ? 'required' : 'optional')}
-                      onChange={e => setParams(prev => ({ ...prev, [p.name]: e.target.value }))}
-                      disabled={running}
-                    />
-                  </div>
-                ))}
-
-                {running ? (
-                  <button className="btn-outline perf-run-btn" onClick={stop}><X size={15} /> Stop</button>
-                ) : (
-                  <button className="btn-primary perf-run-btn" onClick={runInquiry} disabled={!inquiryId}>
-                    <Search size={15} /> Run Inquiry
-                  </button>
-                )}
-
-                {rows && (
-                  <div className="hcm-results">
-                    <div className="hcm-results-head">
-                      Results — {rows.length} row{rows.length === 1 ? '' : 's'}
-                      <span className={`hcm-source-badge ${source}`}>{source === 'live' ? '🟢 live' : '🧪 simulated'}</span>
-                    </div>
-                    {rows.length > 0 ? (
-                      <div className="hcm-table-wrap">
-                        <table className="perf-metric-table">
-                          <thead><tr>{columns.map(c => <th key={c}>{c}</th>)}</tr></thead>
-                          <tbody>
-                            {rows.slice(0, 50).map((r, i) => (
-                              <tr key={i}>
-                                {columns.map(c => <td key={c} title={String(r[c] ?? '')}>{String(r[c] ?? '')}</td>)}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <div className="hcm-note">No rows returned. Try a different parameter or effective date.</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="perf-config">
-                <div className="perf-config-label">Ask an HCM / Payroll functional question</div>
-                <textarea
-                  className="hcm-input hcm-textarea"
-                  rows={6}
-                  value={question}
-                  placeholder="e.g. What is the Oracle EBS payroll process flow from run to GL transfer?"
-                  onChange={e => setQuestion(e.target.value)}
-                  disabled={running}
-                />
-                {running ? (
-                  <button className="btn-outline perf-run-btn" onClick={stop}><X size={15} /> Stop</button>
-                ) : (
-                  <button className="btn-primary perf-run-btn" onClick={runAsk} disabled={!question.trim()}>
-                    💬 Ask
-                  </button>
-                )}
-                <div className="hcm-note">Read-only advisor — grounded in the knowledge base when a match is found.</div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Right panel */}

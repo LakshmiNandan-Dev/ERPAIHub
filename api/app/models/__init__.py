@@ -13,9 +13,18 @@ from app.models.iam import User, Role, UserRole, Agent, RoleAgent, UserSession
 from app.models.chat import AgentStep, ChatSession, AgentRun, ChatMessage
 from app.models.rag import RagDocument
 from app.models.infra import SshServer, EbsEnvironment
-from app.models.dba import DeploymentRun, DeploymentStep, CloneRun, PatchRun
+from app.models.dba import (
+    DeploymentRun, DeploymentStep, CloneRun, PatchRun, PatchTarget, AppliedPatchSnapshot, PatchFileScanConfig,
+    PatchFileInventory,
+)
+from app.models.monitoring import MonitoringSchedule, DiagnosticRun, Finding
+from app.models.tickets import Ticket
+from app.models.compare import EnvironmentConfigSnapshot
+from app.models.nl_sql import NlSqlSchemaSnapshot, NlSqlTrainingRun
 from app.models.audit import AuditLog, UsageEvent, InteractionLog
-from app.models.settings import IntegrationCredential, SsoSettings, LlmCredential, AgentLlmPolicy, AgentPrompt
+from app.models.settings import (
+    IntegrationCredential, SsoSettings, LlmCredential, AgentLlmPolicy, AgentPrompt, NlSqlChatSettings,
+)
 from app.models.ml import TrainingExample, TrainingJob, AgentModel
 
 __all__ = [
@@ -29,11 +38,20 @@ __all__ = [
     # infra (shared instance/connection registry)
     "SshServer", "EbsEnvironment",
     # apps-DBA run records
-    "DeploymentRun", "DeploymentStep", "CloneRun", "PatchRun",
+    "DeploymentRun", "DeploymentStep", "CloneRun", "PatchRun", "PatchTarget", "AppliedPatchSnapshot",
+    "PatchFileScanConfig", "PatchFileInventory",
+    # scheduled diagnostics / findings (shared by performance + patch-gap scans)
+    "MonitoringSchedule", "DiagnosticRun", "Finding",
+    # tickets
+    "Ticket",
+    # environment-to-environment comparison
+    "EnvironmentConfigSnapshot",
+    # TinyLLM NL->SQL per-environment schema extraction + fine-tuning
+    "NlSqlSchemaSnapshot", "NlSqlTrainingRun",
     # audit / telemetry
     "AuditLog", "UsageEvent", "InteractionLog",
     # admin-managed settings / credentials
-    "IntegrationCredential", "SsoSettings", "LlmCredential", "AgentLlmPolicy", "AgentPrompt",
+    "IntegrationCredential", "SsoSettings", "LlmCredential", "AgentLlmPolicy", "AgentPrompt", "NlSqlChatSettings",
     # local-model fine-tuning
     "TrainingExample", "TrainingJob", "AgentModel",
 ]

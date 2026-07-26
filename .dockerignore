@@ -1,0 +1,17 @@
+.git
+frontend/node_modules
+frontend/dist
+venv
+api/.venv
+**/__pycache__
+*.pyc
+*.pyo
+document
+data
+tinyllm/tests
+tinyllm/deploy
+tinyllm/scripts
+api/chroma_db
+api/nlsql_data
+**/.env
+alembic/versions/*.pyc

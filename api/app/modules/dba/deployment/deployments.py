@@ -13,6 +13,7 @@ from app import schemas, models
 from app.core.rag import rag_service
 from app.core.llm import llm_service
 from app.core.auth.auth import get_current_user, require_agent
+from app.core.safety import command_validator
 
 router = APIRouter(
     prefix="/deployments",
@@ -714,10 +715,14 @@ def execute_deployment_task(deployment_id: int):
                 steps[0].log_output = ssh_conn_log + clone_log + "[GIT] Cloning...\n"
                 db.commit()
 
-            # Remove any stale clone, then clone fresh
+            # Remove any stale clone, then clone fresh. clone_dir is app-generated
+            # (f"/tmp/deploy_{deployment_id}" from an int PK) — not user input,
+            # safe as-is. branch and git_url_auth come from stored/admin-supplied
+            # values — quote them rather than interpolating raw.
             ssh_client.exec_command(f"rm -rf {clone_dir}")
             stdin, stdout, stderr = ssh_client.exec_command(
-                f"git clone --depth 1 --branch {branch} '{git_url_auth}' {clone_dir} 2>&1"
+                f"git clone --depth 1 --branch {command_validator.quote_arg(branch)} "
+                f"{command_validator.quote_arg(git_url_auth)} {clone_dir} 2>&1"
             )
             exit_status = stdout.channel.recv_exit_status()
             clone_out   = stdout.read().decode("utf-8", errors="ignore")
@@ -758,6 +763,21 @@ def execute_deployment_task(deployment_id: int):
 
             # Inject stored DB credentials, replacing any hardcoded user/pass in the command
             safe_cmd = _inject_db_credentials(step.command, deployment)
+
+            # Reject anything that doesn't look like a legitimate command for this
+            # step's execution_type before it ever reaches the remote shell — run
+            # unconditionally (both real-SSH and simulated branches) so behavior
+            # doesn't depend on whether SSH happens to be configured.
+            cmd_ok, cmd_reason = command_validator.validate_deployment_command(step.execution_type, safe_cmd)
+            if not cmd_ok:
+                step.status = "failed"
+                step.log_output = (step.log_output or "") + f"[SECURITY] Command rejected: {cmd_reason}\n"
+                step.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                deployment.status = "failed"
+                deployment.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                return
 
             if clone_dir:
                 # Files live in the git clone on the server
