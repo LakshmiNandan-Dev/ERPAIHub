@@ -1,6 +1,8 @@
 """TC-PT-01 to TC-PT-30 — Patching Agent"""
 import pytest
 
+from app.modules.dba.patching import patch_exec
+
 
 def _patch_payload(target_env_name, components="db_home", patch_number="37123456", **overrides):
     base = {
@@ -351,3 +353,103 @@ class TestPatchingInteractiveAdop:
         r2 = client.post(f"/patching/{run_id}/phase",
                          json={"phase": "prepare"}, headers=admin_headers)
         assert r2.status_code == 400
+
+
+class TestPatchExecCommandSafety:
+    """patch_exec.py's live SSH helpers interpolate admin/agent-supplied values
+    (patch numbers, OPatch homes, adop phase params) into remote shell commands.
+    These are pure unit tests against the command-construction logic — no real
+    SSH connection is made; `_connect`/`_run` are monkeypatched to capture the
+    exact command string that would have been sent."""
+
+    _FAKE_CREDS = {"ssh": {"host": "app.example.com"}}
+
+    class _FakeClient:
+        def close(self):
+            pass
+
+    def _capture_run(self, monkeypatch):
+        captured = {}
+
+        def _fake_connect(ssh):
+            return self._FakeClient()
+
+        def _fake_run(client, command, feed=None, timeout=None):
+            captured["command"] = command
+            return 0, "ok"
+
+        monkeypatch.setattr(patch_exec, "_connect", _fake_connect)
+        monkeypatch.setattr(patch_exec, "_run", _fake_run)
+        return captured
+
+    def test_lspatches_rejects_unsafe_home(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        result = patch_exec.live_opatch_lspatches(self._FAKE_CREDS, "/u01/home; rm -rf /", "37123456")
+        assert "error" in result
+        assert "command" not in captured
+
+    def test_lspatches_quotes_patch_value(self, monkeypatch):
+        import shlex
+        captured = self._capture_run(monkeypatch)
+        unsafe_patch = "37123456; rm -rf /"
+        result = patch_exec.live_opatch_lspatches(self._FAKE_CREDS, "/u01/db_home", unsafe_patch)
+        assert "error" not in result
+        # The unsafe patch value must be shell-quoted, never interpolated raw.
+        assert shlex.quote(unsafe_patch) in captured["command"]
+
+    def test_conflict_check_rejects_unsafe_home_or_patch_dir(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        result = patch_exec.live_opatch_conflict(self._FAKE_CREDS, "/u01/db_home",
+                                                  "/u01/stage/`whoami`")
+        assert "error" in result
+        assert "command" not in captured
+
+    def test_adop_status_rejects_unsafe_run_fs(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        result = patch_exec.live_adop_status(self._FAKE_CREDS, "/u01/EBSapps/appl && rm -rf /")
+        assert "error" in result
+        assert "command" not in captured
+
+
+class TestAdopPhaseCommandSafety:
+    """_adop_phase_command builds the destructive live-phase command string —
+    every interpolated value must be validated before being embedded."""
+
+    def _ctx(self, **overrides):
+        base = {"PATCH_NUMBER": "37123456", "APPLY_WORKERS": "8", "ADOP_MODE": "online",
+                "CLEANUP_MODE": "standard"}
+        base.update(overrides)
+        return base
+
+    def test_valid_apply_phase_builds_expected_command(self):
+        cmd = patch_exec._adop_phase_command("apply", self._ctx())
+        assert cmd == "adop phase=apply patches=37123456 workers=8"
+
+    def test_unknown_phase_rejected(self):
+        with pytest.raises(ValueError):
+            patch_exec._adop_phase_command("nuke", self._ctx())
+
+    def test_unsafe_patch_number_rejected(self):
+        with pytest.raises(ValueError):
+            patch_exec._adop_phase_command("apply", self._ctx(PATCH_NUMBER="37123456; rm -rf /"))
+
+    def test_unsafe_apply_workers_rejected(self):
+        with pytest.raises(ValueError):
+            patch_exec._adop_phase_command("apply", self._ctx(APPLY_WORKERS="8; rm -rf /"))
+
+    def test_unknown_adop_mode_rejected(self):
+        with pytest.raises(ValueError):
+            patch_exec._adop_phase_command("apply", self._ctx(ADOP_MODE="rm -rf /"))
+
+    def test_unknown_cleanup_mode_rejected(self):
+        with pytest.raises(ValueError):
+            patch_exec._adop_phase_command("cleanup", self._ctx(CLEANUP_MODE="; rm -rf /"))
+
+    def test_live_adop_phase_returns_error_instead_of_raising(self, monkeypatch):
+        """The router-facing live_adop_phase catches the ValueError and returns
+        {error: ...} rather than letting it propagate."""
+        result = patch_exec.live_adop_phase(
+            {"ssh": {"host": "app.example.com"}, "apps_pwd": "x", "weblogic_pwd": "y", "system_pwd": "z"},
+            "/u01/EBSapps/appl", "apply", self._ctx(PATCH_NUMBER="`whoami`"),
+        )
+        assert "error" in result

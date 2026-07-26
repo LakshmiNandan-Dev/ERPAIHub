@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../../api';
 import ReactMarkdown from 'react-markdown';
-import { Send, Download, RotateCcw, Loader2, CheckCircle2, Wrench, ListChecks, Activity } from 'lucide-react';
+import { Send, Download, RotateCcw, Loader2, CheckCircle2, Wrench, ListChecks, Activity, ShieldAlert, RefreshCw } from 'lucide-react';
 import './PatchCenter.css';
+import '../Admin/AdminConsole.css';
 
 const NODE_LABEL = {
   'controller': 'Controller',
@@ -20,6 +21,7 @@ const PHASE_BTNS = [
 const hasAdopComponent = (s) => /\b(adop|apps|application|ebs|online)\b/i.test(s || '');
 
 export default function PatchCenter({ onClose }) {
+  const [view, setView] = useState('patch');   // 'patch' | 'gap'
   const [messages, setMessages] = useState([]);
   const [context, setContext] = useState({});
   const [field, setField] = useState(null);
@@ -167,10 +169,25 @@ export default function PatchCenter({ onClose }) {
       <div className="patch-container">
         <div className="patch-header">
           <h3><Wrench size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />EBS Patching Agent
-            <span className="patch-sub">DB / Grid / RAC OPatch · adop · WebLogic / FMW · simulator</span></h3>
+            <span className="patch-sub">
+              {view === 'gap'
+                ? 'Patch Gap — live opatch lspatches inventory vs. target patch list (SSH required, no simulator)'
+                : 'DB / Grid / RAC OPatch · adop · WebLogic / FMW · live SSH or simulator'}
+            </span></h3>
           <button className="patch-close" onClick={onClose}>×</button>
         </div>
 
+        <div className="admin-tabs" style={{ padding: '0 1rem' }}>
+          <button className={`admin-tab ${view === 'patch' ? 'active' : ''}`} onClick={() => setView('patch')}>
+            <Wrench size={13} style={{ marginRight: 6, verticalAlign: 'middle' }} />Patch
+          </button>
+          <button className={`admin-tab ${view === 'gap' ? 'active' : ''}`} onClick={() => setView('gap')}>
+            <ShieldAlert size={13} style={{ marginRight: 6, verticalAlign: 'middle' }} />Patch Gap
+          </button>
+        </div>
+
+        {view === 'gap' ? <PatchGapPanel /> : (
+        <>
         <div className="patch-body">
           <div className="patch-chat">
             {messages.map((m, i) => (
@@ -289,7 +306,197 @@ export default function PatchCenter({ onClose }) {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
+    </div>
+  );
+}
+
+function PatchGapPanel() {
+  const [environments, setEnvironments] = useState([]);
+  const [environmentId, setEnvironmentId] = useState('');
+  const [gaps, setGaps] = useState(null);
+  const [error, setError] = useState('');
+  const [scanning, setScanning] = useState(false);
+
+  const INV_PAGE_SIZE = 50;
+  const [invProduct, setInvProduct] = useState('');
+  const [invFilenameQ, setInvFilenameQ] = useState('');
+  const [invStatus, setInvStatus] = useState('');
+  const [invPage, setInvPage] = useState(0);
+  const [inventory, setInventory] = useState(null);
+  const [invError, setInvError] = useState('');
+
+  useEffect(() => {
+    api.get('/config/environments').then(r => setEnvironments(r.data)).catch(() => {});
+  }, []);
+
+  const load = (envId) => {
+    if (!envId) { setGaps(null); return; }
+    setError('');
+    api.get(`/patching/gap/${envId}`)
+      .then(r => setGaps(r.data))
+      .catch(e => setError(e.response?.data?.detail || e.message));
+  };
+
+  useEffect(() => { load(environmentId); }, [environmentId]);
+
+  const loadInventory = () => {
+    if (!environmentId) { setInventory(null); return; }
+    setInvError('');
+    const params = new URLSearchParams();
+    if (invProduct) params.set('product', invProduct);
+    if (invFilenameQ) params.set('filename', invFilenameQ);
+    if (invStatus) params.set('match_status', invStatus);
+    params.set('limit', INV_PAGE_SIZE);
+    params.set('offset', invPage * INV_PAGE_SIZE);
+    api.get(`/patching/gap/files/inventory/${environmentId}?${params.toString()}`)
+      .then(r => setInventory(r.data))
+      .catch(e => setInvError(e.response?.data?.detail || e.message));
+  };
+
+  useEffect(() => { setInvPage(0); }, [environmentId, invStatus]);
+  useEffect(() => { loadInventory(); }, [environmentId, invStatus, invPage]);
+
+  const scanNow = async () => {
+    if (!environmentId) return;
+    setScanning(true);
+    setError('');
+    try {
+      await api.post(`/patching/gap/scan/${environmentId}`);
+      setTimeout(() => load(environmentId), 2000);
+    } catch (e) {
+      setError(e.response?.data?.detail || e.message);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const rows = gaps || [];
+
+  return (
+    <div className="admin-body" style={{ padding: '1rem' }}>
+      <p className="admin-muted">
+        Compares each component's admin-defined target patch list (Admin Console → Environments →
+        Patch Targets) against the live <code>opatch lspatches</code> inventory (tech-stack homes) or
+        <code>ad_bugs</code> (the <strong>adop</strong> component — application-tier patches). File-level
+        drift (Admin Console → Environments → file-scan icon) compares the whole run filesystem against{' '}
+        <code>ad_files</code>/<code>ad_file_versions</code> and surfaces mismatches in the Findings feed.
+      </p>
+      {error && <p className="admin-error">{error}</p>}
+      <div className="admin-toolbar" style={{ gap: '0.5rem' }}>
+        <select value={environmentId} onChange={e => setEnvironmentId(e.target.value)}>
+          <option value="">Select an environment…</option>
+          {environments.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+        </select>
+        <button className="admin-btn-primary" disabled={!environmentId || scanning} onClick={scanNow}>
+          {scanning ? <Loader2 size={14} className="spin" /> : null} {scanning ? 'Scanning…' : 'Scan now'}
+        </button>
+      </div>
+
+      {environmentId && (
+        <table className="admin-table">
+          <thead><tr>
+            <th>Component</th><th>Home</th><th>Target</th><th>Applied</th><th>Missing</th>
+            <th>Last scanned</th><th>Status</th>
+          </tr></thead>
+          <tbody>
+            {rows.map(g => (
+              <tr key={g.component}>
+                <td>{g.component}</td>
+                <td className="admin-muted" style={{ fontSize: '0.75rem' }}>{g.home_path || '—'}</td>
+                <td>{(g.target_patches || []).length}</td>
+                <td>{(g.applied_patches || []).length}</td>
+                <td>
+                  {g.missing.length === 0
+                    ? <span className="admin-pill ok">none</span>
+                    : <span className="admin-pill off" title={g.missing.join(', ')}>{g.missing.length} missing</span>}
+                </td>
+                <td className="admin-muted">{g.last_scanned_at ? new Date(g.last_scanned_at).toLocaleString() : 'never'}</td>
+                <td>{g.scan_status === 'ok'
+                  ? <span className="admin-pill ok">ok</span>
+                  : g.scan_status === 'never_scanned'
+                    ? <span className="admin-muted">—</span>
+                    : <span className="admin-pill off">{g.scan_status}</span>}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={7} className="admin-muted">
+                No patch targets defined for this environment yet — add one in Admin Console → Environments.
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      )}
+
+      {environmentId && (
+        <div style={{ marginTop: '1.5rem', borderTop: '1px solid #FFFFFF', paddingTop: '1rem' }}>
+          <h4 style={{ margin: '0 0 0.5rem' }}>File Inventory</h4>
+          <p className="admin-muted">
+            Every file the latest scan saw — filesystem version and AD_FILES-registered version, not just drift.
+          </p>
+          {invError && <p className="admin-error">{invError}</p>}
+          <div className="admin-toolbar" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+            <input placeholder="Product (e.g. ap)" value={invProduct}
+              onChange={e => setInvProduct(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { setInvPage(0); loadInventory(); } }} style={{ width: 120 }} />
+            <input placeholder="Filename contains…" value={invFilenameQ}
+              onChange={e => setInvFilenameQ(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { setInvPage(0); loadInventory(); } }} style={{ width: 180 }} />
+            <select value={invStatus} onChange={e => setInvStatus(e.target.value)}>
+              <option value="">All statuses</option>
+              <option value="match">Match</option>
+              <option value="mismatch">Mismatch</option>
+              <option value="fs_only">Not in AD_FILES</option>
+            </select>
+            <button className="admin-btn-ghost" onClick={() => { setInvPage(0); loadInventory(); }}>
+              <RefreshCw size={13} /> Apply
+            </button>
+          </div>
+          <table className="admin-table">
+            <thead><tr>
+              <th>Product</th><th>Filename</th><th>Path</th><th>FS version</th>
+              <th>AD_FILES version</th><th>Status</th><th>Last scanned</th>
+            </tr></thead>
+            <tbody>
+              {(inventory?.items || []).map(r => (
+                <tr key={r.id}>
+                  <td>{r.product}</td>
+                  <td>{r.filename}</td>
+                  <td className="admin-muted" style={{ fontSize: '0.75rem' }}>{r.path}</td>
+                  <td>{r.fs_version || '—'}</td>
+                  <td>{r.db_version || '—'}</td>
+                  <td>
+                    {r.match_status === 'match' && <span className="admin-pill ok">match</span>}
+                    {r.match_status === 'mismatch' && <span className="admin-pill off">mismatch</span>}
+                    {r.match_status === 'fs_only' && <span className="admin-pill pend">not in AD_FILES</span>}
+                  </td>
+                  <td className="admin-muted">{new Date(r.last_scanned_at).toLocaleString()}</td>
+                </tr>
+              ))}
+              {inventory && inventory.items.length === 0 && (
+                <tr><td colSpan={7} className="admin-muted">No files match these filters.</td></tr>
+              )}
+              {!inventory && !invError && (
+                <tr><td colSpan={7} className="admin-muted">Loading…</td></tr>
+              )}
+            </tbody>
+          </table>
+          {inventory && inventory.total > 0 && (
+            <div className="admin-toolbar" style={{ justifyContent: 'space-between' }}>
+              <span className="admin-muted">
+                {invPage * INV_PAGE_SIZE + 1}–{Math.min((invPage + 1) * INV_PAGE_SIZE, inventory.total)} of {inventory.total}
+              </span>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button className="admin-btn-ghost" disabled={invPage === 0} onClick={() => setInvPage(p => p - 1)}>Prev</button>
+                <button className="admin-btn-ghost" disabled={(invPage + 1) * INV_PAGE_SIZE >= inventory.total}
+                  onClick={() => setInvPage(p => p + 1)}>Next</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

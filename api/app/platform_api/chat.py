@@ -314,6 +314,24 @@ def start_agent_run(session_id: int, run_data: schemas.AgentRunCreate, db: Sessi
 
 # ─── Streaming endpoint ────────────────────────────────────────────────────────
 
+def _canned_reply_response(db: Session, session_id: int, response_text: str) -> StreamingResponse:
+    """Save response_text as the assistant turn and stream it word-by-word —
+    same short-circuit shape as the deploy-intent blocks below, factored out
+    for the NL-SQL intent block's several exit points."""
+    assistant_msg = models.ChatMessage(session_id=session_id, role="assistant", content=response_text)
+    db.add(assistant_msg)
+    db.commit()
+
+    async def _stream():
+        for word in response_text.split(" "):
+            yield f"data: {json.dumps(word + ' ')}\n\n"
+            time.sleep(0.03)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @router.post("/sessions/{session_id}/stream")
 async def stream_message(
     session_id: int,
@@ -396,9 +414,12 @@ async def stream_message(
             )
 
     # 2.5. Retrieve chat history to detect previous interview loops
+    # id is a stable tiebreak for created_at ties (server-side now() can repeat
+    # within one fast transaction / one DB clock tick) — id always increases in
+    # insertion order regardless of timestamp resolution.
     history = db.query(models.ChatMessage).filter(
         models.ChatMessage.session_id == session_id
-    ).order_by(models.ChatMessage.created_at.desc()).limit(5).all()
+    ).order_by(models.ChatMessage.created_at.desc(), models.ChatMessage.id.desc()).limit(5).all()
 
     lower_content = message_data.content.lower().strip()
 
@@ -628,6 +649,105 @@ async def stream_message(
                 "X-Accel-Buffering": "no",
             }
         )
+
+    # 2.9. NL->SQL data-question intent — detect a natural-language data lookup,
+    # propose SQL (env slot-fill if needed, then a confirm turn to execute),
+    # short-circuiting RAG/LLM the same way the deploy block above does. Reached
+    # only when the deploy block did NOT fire this turn (it already returned).
+    from app.modules.dba.nl_sql.nl_sql_service import looks_like_data_question
+    _NLSQL_ENV_MARKER = "nl-sql agent — which environment"
+    _NLSQL_PROPOSAL_MARKER = "nl-sql agent — proposed sql"
+    _CONFIRM_WORDS = ("run it", "run this", "execute", "confirm", "yes", "go ahead", "do it")
+
+    is_data_question_intent = looks_like_data_question(lower_content)
+
+    was_nlsql_env_pending = False
+    pending_question = None
+    was_nlsql_proposal_pending = False
+    pending_sql = None
+    pending_env_name = None
+    if len(history) >= 2:
+        prev_assistant = history[1]
+        if prev_assistant.role == "assistant":
+            prev_lower = prev_assistant.content.lower()
+            if _NLSQL_ENV_MARKER in prev_lower:
+                was_nlsql_env_pending = True
+                for h_msg in history[2:5]:
+                    if h_msg.role == "user":
+                        pending_question = h_msg.content
+                        break
+            elif _NLSQL_PROPOSAL_MARKER in prev_lower:
+                was_nlsql_proposal_pending = True
+                m = _re.search(r"```sql\n(.*?)\n```", prev_assistant.content, _re.DOTALL)
+                pending_sql = m.group(1).strip() if m else None
+                m2 = _re.search(r"environment: `([^`]+)`", prev_assistant.content)
+                pending_env_name = m2.group(1) if m2 else None
+
+    _nlsql_confirmed = was_nlsql_proposal_pending and pending_sql and any(
+        w in lower_content for w in _CONFIRM_WORDS)
+
+    if _nlsql_confirmed or is_data_question_intent or was_nlsql_env_pending:
+        from app.core.auth.auth import effective_agents
+        from app.core.audit import audit_service
+        from app.modules.dba.nl_sql import nl_sql_service
+
+        if "nl_sql" not in effective_agents(current_user):
+            return _canned_reply_response(db, session_id,
+                "🔒 Asking data questions needs the **NL→SQL Agent** grant, which your role doesn't have. "
+                "Ask an administrator to enable it, or continue chatting normally.")
+
+        if _nlsql_confirmed:
+            env = db.query(models.EbsEnvironment).filter(
+                models.EbsEnvironment.name == pending_env_name).first()
+            if not env:
+                response_text = f"❌ Environment `{pending_env_name}` is no longer registered — ask a new question."
+            else:
+                try:
+                    rows = nl_sql_service.execute(env, pending_sql, max_rows=50)
+                    if rows:
+                        body = "\n".join("| " + " | ".join(str(c) for c in r) + " |" for r in rows)
+                        response_text = f"✅ **{len(rows)} row(s) from `{env.name}`:**\n\n{body}"
+                    else:
+                        response_text = f"✅ Query ran successfully against `{env.name}` — no rows returned."
+                except (ValueError, RuntimeError) as exc:
+                    response_text = f"❌ Couldn't run that: {exc}"
+            audit_service.log("agent_invoke", agent="nl_sql", user_id=current_user.id,
+                              username=current_user.username,
+                              detail={"sql": pending_sql, "env": pending_env_name})
+            return _canned_reply_response(db, session_id, response_text)
+
+        # Not confirming -> either a fresh question or continuing an env slot-fill.
+        question = pending_question or message_data.content
+        envs = db.query(models.EbsEnvironment).all()
+        combined = lower_content
+        if was_nlsql_env_pending:
+            combined += " " + " ".join(h.content.lower() for h in history[:4])
+        env = next((e for e in envs if e.name.lower() in combined), None)
+
+        if not env:
+            names = ", ".join(e.name for e in envs) or "none registered — ask an admin to add one"
+            return _canned_reply_response(db, session_id,
+                f"🗣️ **NL-SQL Agent — which environment?**\n\n"
+                f"Which environment should I run this against? ({names})")
+
+        result = nl_sql_service.propose(db, env, question)
+        detail_lines = ""
+        if nl_sql_service.get_chat_settings(db).show_technical_details:
+            note_line = f"- Note: {result['note']}\n" if result.get("note") else ""
+            detail_lines = (
+                f"- Schema-valid: {result['graph_valid']} · Explain-ok: {result['explain_ok']}\n"
+                f"{note_line}\n"
+            )
+        response_text = (
+            f"🗣️ **NL-SQL Agent — proposed SQL** (environment: `{env.name}`)\n\n"
+            f"```sql\n{result['sql']}\n```\n\n"
+            f"{detail_lines}"
+            "Reply **run it** to execute (read-only, capped to 50 rows), or ask a different question."
+        )
+        audit_service.log("agent_invoke", agent="nl_sql", user_id=current_user.id,
+                          username=current_user.username,
+                          detail={"question": question, "env": env.name})
+        return _canned_reply_response(db, session_id, response_text)
 
     # 3. Auto-title session on first message
     msg_count = db.query(models.ChatMessage).filter(models.ChatMessage.session_id == session_id).count()

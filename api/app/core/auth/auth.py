@@ -75,6 +75,8 @@ GATED_AGENTS = {
     "cloning":     "Cloning Agent — clone EBS environments (prod guard applies).",
     "patching":    "Patching Agent — run adop / OPatch (maker-checker gated).",
     "hcm":         "HCM Functional Agent — read-only HR/Payroll inquiry & functional advice.",
+    "nl_sql":      "NL→SQL Agent — ask questions in plain English, get proposed read-only Oracle SQL "
+                   "(per-environment fine-tuning).",
 }
 
 

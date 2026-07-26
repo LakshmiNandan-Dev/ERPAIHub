@@ -35,3 +35,18 @@ def test_repair_is_noop_when_correct_or_ambiguous():
     assert schema_repair(good, "credit invoices", _SCHEMA) == good       # already valid value
     seg = "SELECT gcc.segment5 FROM gl_code_combinations gcc"
     assert schema_repair(seg, "list code combinations", _SCHEMA) == seg  # no label in question
+
+
+def test_org_filter_repair():
+    sql = "SELECT aia.invoice_id FROM ap_invoices_all aia WHERE aia.org_id = 101"
+    for q in ("invoices for operating unit 305", "invoices for org 305",
+              "invoices for ou 305", "invoices in operating unit 305"):
+        assert "aia.org_id = 305" in schema_repair(sql, q, _SCHEMA), q
+
+
+def test_org_filter_repair_noop_when_unnamed():
+    sql = "SELECT aia.invoice_id FROM ap_invoices_all aia WHERE aia.org_id = 101"
+    assert schema_repair(sql, "list all invoices", _SCHEMA) == sql       # no org number named
+    # a year in the question must NOT be mistaken for an org value
+    dated = "SELECT aia.invoice_id FROM ap_invoices_all aia WHERE EXTRACT(YEAR FROM aia.invoice_date) = 2024"
+    assert schema_repair(dated, "invoices in 2024", _SCHEMA) == dated

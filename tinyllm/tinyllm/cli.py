@@ -71,7 +71,7 @@ def _extract(args):
     """Read the customer's EBS catalog (read-only) and save it for local training."""
     from .extract import extract_schema
     from .schema_graph.serialize import save_schema
-    schema = extract_schema(dsn=args.dsn, mock=args.mock)
+    schema = extract_schema(dsn=args.dsn, mock=args.mock, extra_owners=args.owner)
     save_schema(schema, args.out)
     print(f"extracted {len(schema.tables)} tables, {len(schema.foreign_keys)} foreign keys "
           f"(inferred where EBS declares none) -> {args.out}")
@@ -148,6 +148,8 @@ def main(argv=None):
     e = sub.add_parser("extract", help="extract the EBS catalog (read-only) -> schema JSON")
     e.add_argument("--dsn", help="oracledb DSN, e.g. user/pwd@host:1521/EBS (read-only account)")
     e.add_argument("--mock", action="store_true", help="use the built-in AP/GL mock (no Oracle)")
+    e.add_argument("--owner", action="append", default=[],
+                   help="extra schema owner to include beyond licensed/shared (e.g. a custom XX schema); repeatable")
     e.add_argument("--out", default="schema.json")
     e.set_defaults(func=_extract)
 

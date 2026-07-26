@@ -17,22 +17,24 @@ from typing import Optional, List
 from app.core.auth.auth import get_current_user, require_agent
 from app import models
 from app.core.llm import llm_service
+from app.core.rag import rag_service
 from app.core import database, config_service, telemetry, prompts
+from app.modules.dba.performance import performance_service as ps
 
 router = APIRouter(prefix="/performance", tags=["Performance Agent"])
 
-ALL_AREAS = ["wait_events", "top_sql", "memory", "locks", "tablespace", "concurrent_manager", "statistics"]
+ALL_AREAS = ps.ALL_AREAS
 
 
-def _record_perf_tokens(user, provider, model, messages, full_analysis, usage):
-    """Fire-and-forget token telemetry for a performance analysis run."""
+def _record_perf_tokens(user, provider, model, messages, full_analysis, usage, endpoint="performance.analyze"):
+    """Fire-and-forget token telemetry for a performance analysis/ask run."""
     try:
         prompt_text = "".join(m.get("content", "") for m in messages)
         prompt_tokens = usage.get("prompt_tokens") or telemetry.est_tokens(prompt_text)
         completion_tokens = usage.get("completion_tokens") or telemetry.est_tokens("".join(full_analysis))
         asyncio.get_event_loop().run_in_executor(
             None, telemetry.record_llm,
-            user.id, user.username, "performance.analyze", provider, model,
+            user.id, user.username, endpoint, provider, model,
             prompt_tokens, completion_tokens, len(prompt_text),
         )
     except Exception:
@@ -41,6 +43,7 @@ def _record_perf_tokens(user, provider, model, messages, full_analysis, usage):
 
 class PerformanceRequest(BaseModel):
     environment: Optional[str] = "EBS"
+    environment_id: Optional[int] = None
     db_host: Optional[str] = None
     db_port: Optional[int] = 1521
     db_sid: Optional[str] = None
@@ -51,200 +54,6 @@ class PerformanceRequest(BaseModel):
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
-
-
-# ── Simulated Oracle diagnostic data ─────────────────────────────────────────
-# Each function seeds random with env so results are deterministic per environment.
-
-def _wait_events(env: str) -> dict:
-    rng = random.Random(hash(env) % 10000)
-    events = [
-        {"event": "db file sequential read",       "waits": rng.randint(40000, 250000), "time_ms": rng.randint(120000, 900000), "avg_ms": rng.randint(2, 18)},
-        {"event": "db file scattered read",        "waits": rng.randint(8000,  90000),  "time_ms": rng.randint(30000,  400000), "avg_ms": rng.randint(3, 22)},
-        {"event": "log file sync",                 "waits": rng.randint(3000,  35000),  "time_ms": rng.randint(8000,   150000), "avg_ms": rng.randint(1, 10)},
-        {"event": "enq: TX - row lock contention", "waits": rng.randint(10,    4000),   "time_ms": rng.randint(100,    90000),  "avg_ms": rng.randint(5, 120)},
-        {"event": "buffer busy waits",             "waits": rng.randint(500,   25000),  "time_ms": rng.randint(1000,  50000),   "avg_ms": rng.randint(1, 6)},
-        {"event": "library cache lock",            "waits": rng.randint(50,    6000),   "time_ms": rng.randint(200,   60000),   "avg_ms": rng.randint(1, 40)},
-        {"event": "free buffer waits",             "waits": rng.randint(0,     800),    "time_ms": rng.randint(0,     10000),   "avg_ms": rng.randint(0, 25)},
-        {"event": "SQL*Net message from client",   "waits": rng.randint(100000,1000000),"time_ms": rng.randint(2000000,8000000),"avg_ms": rng.randint(600,3000)},
-    ]
-    return {
-        "query": "SELECT event, total_waits, time_waited_micro/1000 time_ms, average_wait/1000 avg_ms FROM v$system_event WHERE wait_class != 'Idle' ORDER BY time_waited_micro DESC",
-        "rows": sorted(events, key=lambda x: x["time_ms"], reverse=True),
-    }
-
-
-def _top_sql(env: str) -> dict:
-    rng = random.Random(hash(env + "sql") % 10000)
-    sql_texts = [
-        "SELECT /*+ FULL(mts) */ * FROM mtl_material_transactions mts WHERE organization_id = :1 AND transaction_date > :2",
-        "SELECT count(*) FROM fnd_concurrent_requests WHERE status_code IN ('R','S','Q') AND requested_start_date < sysdate - 1/24",
-        "UPDATE ap_invoice_lines_all SET amount = :1 WHERE invoice_id = :2 AND line_number = :3",
-        "SELECT DISTINCT p.party_id, p.party_name FROM hz_parties p, hz_cust_accounts ca WHERE ca.party_id = p.party_id AND p.status = 'A'",
-        "SELECT /*+ USE_NL(poh pol) */ poh.segment1, pol.quantity FROM po_headers_all poh, po_lines_all pol WHERE poh.po_header_id = pol.po_header_id AND poh.org_id = :1",
-    ]
-    sql_ids = ["".join(rng.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=13)) for _ in sql_texts]
-    rows = []
-    for sid, txt in zip(sql_ids, sql_texts):
-        elapsed = rng.randint(300000, 9000000)
-        rows.append({
-            "sql_id":        sid,
-            "executions":    rng.randint(50, 60000),
-            "elapsed_sec":   round(elapsed / 1e6, 2),
-            "cpu_sec":       round(elapsed * rng.uniform(0.4, 0.9) / 1e6, 2),
-            "disk_reads":    rng.randint(2000, 250000),
-            "buffer_gets":   rng.randint(20000, 3000000),
-            "rows_processed":rng.randint(500, 600000),
-            "sql_text":      txt[:120],
-        })
-    return {
-        "query": "SELECT sql_id, executions, elapsed_time/1e6 elapsed_sec, cpu_time/1e6 cpu_sec, disk_reads, buffer_gets, sql_text FROM v$sqlarea ORDER BY elapsed_time DESC FETCH FIRST 5 ROWS ONLY",
-        "rows": sorted(rows, key=lambda x: x["elapsed_sec"], reverse=True),
-    }
-
-
-def _memory(env: str) -> dict:
-    rng = random.Random(hash(env + "mem") % 10000)
-    sga_mb = rng.choice([4096, 8192, 12288, 16384])
-    pga_mb = rng.choice([1024, 2048, 4096])
-    bc_hit  = round(rng.uniform(84, 99.5), 2)
-    sp_hit  = round(rng.uniform(88, 99.8), 2)
-    return {
-        "sga": {
-            "query": "SELECT name, bytes/1024/1024 mb FROM v$sga",
-            "rows": [
-                {"name": "Fixed Size",        "mb": round(rng.uniform(1.5, 2.5), 2)},
-                {"name": "Variable Size",     "mb": round(sga_mb * 0.35, 2)},
-                {"name": "Database Buffers",  "mb": round(sga_mb * 0.60, 2)},
-                {"name": "Redo Buffers",      "mb": round(rng.uniform(8, 64), 2)},
-                {"name": "TOTAL",             "mb": sga_mb},
-            ],
-        },
-        "pga": {
-            "query": "SELECT name, value/1024/1024 mb FROM v$pgastat WHERE name IN ('total PGA allocated','maximum PGA allocated','PGA target parameter')",
-            "rows": [
-                {"name": "PGA target parameter",   "mb": pga_mb},
-                {"name": "total PGA allocated",    "mb": round(pga_mb * rng.uniform(0.55, 0.95), 2)},
-                {"name": "maximum PGA allocated",  "mb": round(pga_mb * rng.uniform(0.85, 1.25), 2)},
-            ],
-        },
-        "buffer_cache_hit_pct": bc_hit,
-        "shared_pool_hit_pct":  sp_hit,
-    }
-
-
-def _locks(env: str) -> dict:
-    rng = random.Random(hash(env + "lck") % 10000)
-    n = rng.randint(0, 6)
-    sqls = [
-        "UPDATE ap_invoices_all SET payment_status_flag = :1 WHERE invoice_id = :2",
-        "INSERT INTO fnd_concurrent_requests VALUES (:1, :2, :3, :4)",
-        "DELETE FROM wf_item_activity_statuses WHERE item_type = :1 AND item_key = :2",
-    ]
-    blocking = [
-        {
-            "blocking_sid":    rng.randint(100, 600),
-            "blocking_user":   rng.choice(["APPS", "APPSRO", "XXCUST"]),
-            "blocked_sid":     rng.randint(100, 600),
-            "blocked_user":    rng.choice(["APPS", "APPSRO"]),
-            "wait_seconds":    rng.randint(10, 4000),
-            "sql_text":        rng.choice(sqls),
-        }
-        for _ in range(n)
-    ]
-    return {
-        "query": "SELECT blocking_session blocking_sid, s.username blocking_user, s.sid blocked_sid, s.username blocked_user, s.seconds_in_wait wait_seconds, q.sql_text FROM v$session s, v$sql q WHERE s.blocking_session IS NOT NULL AND s.sql_id = q.sql_id(+)",
-        "blocking_sessions": blocking,
-        "total_active":  rng.randint(15, 180),
-        "total_waiting": rng.randint(3, 50),
-    }
-
-
-def _tablespace(env: str) -> dict:
-    rng = random.Random(hash(env + "tbs") % 10000)
-    specs = [
-        ("SYSTEM",          rng.uniform(55, 88)),
-        ("SYSAUX",          rng.uniform(45, 92)),
-        ("APPS_TS_TX_DATA", rng.uniform(68, 99)),
-        ("APPS_TS_TX_IDX",  rng.uniform(60, 97)),
-        ("APPS_TS_SEED",    rng.uniform(35, 72)),
-        ("APPS_TS_TOOLS",   rng.uniform(25, 65)),
-        ("APPS_TS_MEDIA",   rng.uniform(15, 88)),
-        ("UNDOTBS1",        rng.uniform(25, 78)),
-        ("TEMP",            rng.uniform(8,  55)),
-    ]
-    rows = []
-    for name, pct in specs:
-        total = round(rng.uniform(20, 200), 2)
-        used  = round(total * pct / 100, 2)
-        rows.append({"tablespace_name": name, "total_gb": total, "used_gb": used,
-                     "free_gb": round(total - used, 2), "used_pct": round(pct, 2)})
-    return {
-        "query": "SELECT tablespace_name, ROUND(used_space*8192/1024/1024/1024,2) used_gb, ROUND(tablespace_size*8192/1024/1024/1024,2) total_gb FROM dba_tablespace_usage_metrics",
-        "rows": sorted(rows, key=lambda x: x["used_pct"], reverse=True),
-    }
-
-
-def _concurrent_manager(env: str) -> dict:
-    rng = random.Random(hash(env + "cm") % 10000)
-    programs = [
-        "ARXRWMAI - AutoInvoice Master Program", "RAXMTR - Revenue Recognition",
-        "XLAACCPB - Transfer to GL", "INVMRP - MRP Planning", "POXCON - PO Approval",
-        "XXAP_CUSTOM_REPORT - Custom AP Report",
-    ]
-    long_running = [
-        {"request_id": rng.randint(1000000, 9999999), "program": rng.choice(programs),
-         "requestor": rng.choice(["SYSADMIN", "APPS", "APPSRO"]),
-         "running_minutes": rng.randint(35, 500)}
-        for _ in range(rng.randint(0, 5))
-    ]
-    error_programs = [
-        {"program": rng.choice(programs), "error_count_1h": rng.randint(1, 12)}
-        for _ in range(rng.randint(0, 4))
-    ]
-    return {
-        "queue": {
-            "pending":       rng.randint(0, 60),
-            "running":       rng.randint(0, 35),
-            "completed_1h":  rng.randint(10, 400),
-            "errored_1h":    rng.randint(0, 25),
-        },
-        "long_running_requests": long_running,
-        "frequently_erroring":   error_programs,
-    }
-
-
-def _statistics(env: str) -> dict:
-    rng = random.Random(hash(env + "sts") % 10000)
-    all_tables = [
-        "MTL_MATERIAL_TRANSACTIONS", "AP_INVOICES_ALL", "RA_CUSTOMER_TRX_ALL",
-        "PO_HEADERS_ALL", "WF_ITEM_ACTIVITY_STATUSES", "FND_CONCURRENT_REQUESTS",
-        "OE_ORDER_HEADERS_ALL", "GL_JE_LINES", "INV_TRANSACTION_TYPES",
-        "AR_PAYMENT_SCHEDULES_ALL", "AP_INVOICE_DISTRIBUTIONS_ALL",
-    ]
-    stale = [
-        {"table_name": t, "num_rows": rng.randint(50000, 60000000),
-         "last_analyzed": f"2026-{rng.randint(1,4):02d}-{rng.randint(1,28):02d}",
-         "days_since_analyzed": rng.randint(7, 90),
-         "stale_pct": round(rng.uniform(10, 85), 2)}
-        for t in rng.sample(all_tables, rng.randint(2, 7))
-    ]
-    pkg_names = ["XXAP_SUPPLIER_PKG", "XXGL_CUSTOM_PKG", "XXOM_ORDER_PKG", "XXINV_STOCK_PKG", "XXAR_AGING_PKG"]
-    obj_types  = ["PACKAGE BODY", "PACKAGE", "PROCEDURE", "TRIGGER"]
-    invalid = [
-        {"object_name": rng.choice(pkg_names), "object_type": rng.choice(obj_types), "status": "INVALID"}
-        for _ in range(rng.randint(0, 8))
-    ]
-    return {
-        "stale_statistics": {
-            "query": "SELECT table_name, num_rows, last_analyzed, stale_stats FROM dba_tab_statistics WHERE stale_stats='YES' AND owner='APPS' ORDER BY num_rows DESC",
-            "rows": sorted(stale, key=lambda x: x["num_rows"], reverse=True),
-        },
-        "invalid_objects": {
-            "query": "SELECT object_name, object_type, status FROM dba_objects WHERE status='INVALID' AND owner='APPS'",
-            "rows": invalid,
-        },
-    }
 
 
 # ── LLM prompt ─────────────────────────────────────────────────────────────────
@@ -281,14 +90,25 @@ async def analyze_performance(
     env   = payload.environment or "EBS"
     areas = payload.analysis_areas or ALL_AREAS
 
-    _AREA_RUNNERS = {
-        "wait_events":        (_wait_events,        "Querying V$SYSTEM_EVENT for top wait events..."),
-        "top_sql":            (_top_sql,             "Querying V$SQLAREA for top SQL by elapsed time..."),
-        "memory":             (_memory,              "Analyzing SGA / PGA memory configuration..."),
-        "locks":              (_locks,               "Checking blocking sessions and lock contention..."),
-        "tablespace":         (_tablespace,          "Scanning DBA_TABLESPACE_USAGE_METRICS..."),
-        "concurrent_manager": (_concurrent_manager,  "Analyzing Concurrent Manager queue depth..."),
-        "statistics":         (_statistics,          "Checking stale object statistics and invalid objects..."),
+    # When environment_id is supplied, resolve the registered EbsEnvironment so
+    # run_area can attempt a real Oracle query (falling back to simulation on
+    # any failure). Absent, behavior is unchanged: string-only env, simulated.
+    env_row = None
+    if payload.environment_id:
+        env_row = db.query(models.EbsEnvironment).filter(
+            models.EbsEnvironment.id == payload.environment_id
+        ).first()
+        if env_row:
+            env = env_row.name
+
+    _AREA_MESSAGES = {
+        "wait_events":        "Querying V$SYSTEM_EVENT for top wait events...",
+        "top_sql":            "Querying V$SQLAREA for top SQL by elapsed time...",
+        "memory":             "Analyzing SGA / PGA memory configuration...",
+        "locks":              "Checking blocking sessions and lock contention...",
+        "tablespace":         "Scanning DBA_TABLESPACE_USAGE_METRICS...",
+        "concurrent_manager": "Analyzing Concurrent Manager queue depth...",
+        "statistics":         "Checking stale object statistics and invalid objects...",
     }
 
     async def stream():
@@ -296,15 +116,15 @@ async def analyze_performance(
         await asyncio.sleep(0.05)
 
         diagnostics = {}
+        data_sources = {}
         for area in areas:
-            if area not in _AREA_RUNNERS:
+            if area not in _AREA_MESSAGES:
                 continue
-            fn, msg = _AREA_RUNNERS[area]
-            yield _sse({"type": "progress", "area": area, "content": msg})
+            yield _sse({"type": "progress", "area": area, "content": _AREA_MESSAGES[area]})
             await asyncio.sleep(0.25)
-            diagnostics[area] = fn(env)
+            diagnostics[area], data_sources[area] = ps.run_area(area, env_row, env)
 
-        yield _sse({"type": "diagnostics", "data": diagnostics})
+        yield _sse({"type": "diagnostics", "data": diagnostics, "data_sources": data_sources})
         yield _sse({"type": "phase", "content": "🤖 Sending metrics to AI — generating performance report..."})
         await asyncio.sleep(0.05)
 
@@ -326,6 +146,94 @@ async def analyze_performance(
     return StreamingResponse(stream(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
+    })
+
+
+# ── Ask (free-text, NL→SQL fallback + RAG-grounded general advice) ────────────
+
+class AskRequest(BaseModel):
+    question: str
+    environment: Optional[str] = "EBS"
+
+
+@router.post("/ask")
+async def ask(
+    payload: AskRequest,
+    request: Request,
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(require_agent("performance")),
+):
+    provider = request.headers.get("X-LLM-Provider", "ollama")
+    model    = request.headers.get("X-LLM-Model") or None
+    api_key  = request.headers.get("X-LLM-Api-Key") or None
+    base_url = request.headers.get("X-LLM-Base-Url") or None
+    provider, model, api_key, base_url = config_service.resolve_llm(
+        provider, model, api_key, base_url, db, agent="performance",
+        route_text="answer Oracle EBS DBA/performance questions and interpret live diagnostic data",
+    )
+    question = (payload.question or "").strip()
+
+    async def stream():
+        if not question:
+            yield _sse({"type": "error", "content": "Please enter a question."})
+            return
+
+        env_row = None
+        if payload.environment:
+            env_row = db.query(models.EbsEnvironment).filter(
+                models.EbsEnvironment.name == payload.environment,
+                models.EbsEnvironment.is_active == True,   # noqa: E712
+            ).first()
+
+        from app.modules.dba.nl_sql import nl_sql_service
+        nlsql_result = None
+        if env_row is not None and nl_sql_service.looks_like_data_question(question):
+            yield _sse({"type": "phase", "content": "🔎 Data question detected — trying NL→SQL..."})
+            nlsql_result = nl_sql_service.try_answer_data_question(db, current_user, env_row, question)
+            if nlsql_result is None:
+                yield _sse({"type": "phase", "content": "↩️ NL→SQL unavailable for this question — falling back to general advice."})
+
+        if nlsql_result is not None:
+            yield _sse({"type": "data", "source": "nl_sql", "sql": nlsql_result["sql"],
+                        "rows": nlsql_result["rows"]})
+            messages = nl_sql_service.build_interpret_messages(question, nlsql_result)
+            endpoint = "performance.ask.nl_sql"
+        else:
+            # Ground in the knowledge base when there's a confident match (web fallback off).
+            rag_context = ""
+            try:
+                rag_context = rag_service.query_rag(question, allow_web_fallback=False)
+            except Exception:
+                rag_context = ""
+            if rag_context:
+                yield _sse({"type": "phase", "content": "📚 Grounding answer in the knowledge base..."})
+
+            system = prompts.get_prompt("performance.ask")
+            user_content = question if not rag_context else (
+                f"[KNOWLEDGE BASE]\n{rag_context}\n[END KNOWLEDGE BASE]\n\n"
+                "Answer the QUESTION using the knowledge base above as the authoritative source and "
+                "cite the source filename for specifics. If it isn't covered, say so and give only "
+                f"well-established Oracle DBA guidance.\n\nQUESTION: {question}"
+            )
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": user_content}]
+            endpoint = "performance.ask"
+
+        full_analysis: list[str] = []
+        usage: dict = {}
+        try:
+            async for token in llm_service.stream_tokens(messages, provider, model, api_key, base_url, usage=usage):
+                full_analysis.append(token)
+                yield _sse({"type": "analysis_token", "content": token})
+        except Exception as exc:
+            yield _sse({"type": "error", "content": f"AI answer failed: {exc}"})
+            return
+
+        _record_perf_tokens(current_user, provider, model, messages, full_analysis, usage, endpoint=endpoint)
+        yield _sse({"type": "analysis_complete", "content": "".join(full_analysis)})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
     })
 
 

@@ -53,72 +53,178 @@ class CatalogSource:
     def lookups(self) -> list[RawLookup]: return []
 
 
-# -- the real adapter's SQL (documented; run by OracleCatalog) ----------------
-# Read-only, returns no business data -- only the data dictionary + FND setup.
-ORACLE_SQL = {
-    # installed-module tables, resolved through the APPS synonyms layer
-    "tables": """
-        SELECT s.synonym_name
-          FROM all_synonyms s
-          JOIN fnd_product_installations i ON i.status = 'I'
-         WHERE s.owner = 'APPS' AND s.table_owner = i.oracle_id
-    """,
-    "columns": """
-        SELECT column_name, data_type, nullable
-          FROM all_tab_columns WHERE table_name = :t ORDER BY column_id
-    """,
-    "primary_key": """
-        SELECT cc.column_name
-          FROM all_constraints c
-          JOIN all_cons_columns cc ON cc.constraint_name = c.constraint_name
-         WHERE c.constraint_type = 'P' AND c.table_name = :t
-    """,
-    "foreign_keys": """
-        SELECT c.table_name, cc.column_name, rc.table_name, rcc.column_name
-          FROM all_constraints c
-          JOIN all_cons_columns cc  ON cc.constraint_name  = c.constraint_name
-          JOIN all_constraints rc   ON rc.constraint_name  = c.r_constraint_name
-          JOIN all_cons_columns rcc ON rcc.constraint_name = rc.constraint_name
-         WHERE c.constraint_type = 'R'
-    """,
-    # flexfield segment -> business meaning (the customer-specific mapping)
-    "flex_segments": """
-        SELECT t.application_table_name, s.application_column_name, s.segment_name
-          FROM fnd_id_flex_segments s
-          JOIN fnd_id_flex_segments_tl tl ON tl.id_flex_num = s.id_flex_num
-         WHERE s.enabled_flag = 'Y'
-    """,
-    "lookups": """
-        SELECT lookup_type, lookup_code, meaning
-          FROM fnd_lookup_values WHERE language = USERENV('LANG')
-    """,
-}
+# -- the real adapter's SQL (HYBRID; read-only data dictionary + FND setup) ----
+#
+# Scope = ALL tables in ALL schemas that are LICENSED ('I') or SHARED-LICENSE
+# ('S') in fnd_product_installations (status 'N' = not installed is excluded),
+# PLUS any extra owners you name (e.g. custom CEMLI schemas like XXxx).
+#
+# HYBRID naming: the table LIST is driven off ALL_TABLES (so synonym-less /
+# custom tables are NOT missed), then each table is renamed to its canonical
+# APPS synonym when one exists (so generated SQL runs unqualified as APPS), and
+# kept owner-qualified ("owner.table") otherwise. Technical tables (names with
+# '$', plus an optional backup-suffix list) are skipped. All reads are BULK /
+# set-based and cached -- a handful of queries for a ~20k-table instance, not one
+# round-trip per table. (Needs a read-only account with dictionary/catalog
+# access, e.g. SELECT_CATALOG_ROLE, so the ALL_* views show every owner.)
+
+# in-scope owners: licensed + shared products from the FND install table
+_SCOPE_BASE = (
+    "SELECT u.oracle_username AS owner "
+    "FROM fnd_product_installations i "
+    "JOIN fnd_oracle_userid u ON u.oracle_id = i.oracle_id "
+    "WHERE i.status IN ('I', 'S')"
+)
+_DEFAULT_SKIP_SUFFIXES = ("_BAK", "_BACKUP", "_BACK", "_OLD")
+
+
+def _queries(scope: str) -> dict[str, str]:
+    """The five bulk queries, parameterized by the in-scope-owner subquery."""
+    return {
+        # table LIST from ALL_TABLES (everything real in the in-scope owners)
+        "tables": f"""
+            SELECT t.owner, t.table_name
+              FROM all_tables t
+             WHERE t.owner IN ({scope})
+               AND t.table_name NOT LIKE '%$%'
+        """,
+        # APPS synonym overlay: (owner, table) -> canonical name
+        "synonyms": f"""
+            SELECT s.synonym_name, s.table_owner, s.table_name
+              FROM all_synonyms s
+             WHERE s.owner = 'APPS'
+               AND s.table_owner IN ({scope})
+        """,
+        # ALL columns for the in-scope owners, keyed by base (owner, table)
+        "columns": f"""
+            SELECT c.owner, c.table_name, c.column_name, c.data_type, c.nullable
+              FROM all_tab_columns c
+             WHERE c.owner IN ({scope})
+             ORDER BY c.owner, c.table_name, c.column_id
+        """,
+        # ALL primary-key columns, keyed by base (owner, table)
+        "primary_key": f"""
+            SELECT con.owner, con.table_name, cc.column_name
+              FROM all_constraints con
+              JOIN all_cons_columns cc
+                ON cc.owner = con.owner AND cc.constraint_name = con.constraint_name
+             WHERE con.constraint_type = 'P'
+               AND con.owner IN ({scope})
+        """,
+        # declared FKs (rare in EBS); both ends as base (owner, table)
+        "foreign_keys": f"""
+            SELECT fc.owner, fc.table_name, fcc.column_name,
+                   pc.owner, pc.table_name, pcc.column_name
+              FROM all_constraints fc
+              JOIN all_cons_columns fcc
+                ON fcc.owner = fc.owner AND fcc.constraint_name = fc.constraint_name
+              JOIN all_constraints pc
+                ON pc.owner = fc.r_owner AND pc.constraint_name = fc.r_constraint_name
+              JOIN all_cons_columns pcc
+                ON pcc.owner = pc.owner AND pcc.constraint_name = pc.constraint_name
+               AND pcc.position = fcc.position
+             WHERE fc.constraint_type = 'R'
+               AND fc.owner IN ({scope})
+        """,
+    }
+
+
+# the default queries (no extra owners) -- handy for reference/inspection
+ORACLE_SQL = _queries(_SCOPE_BASE)
 
 
 class OracleCatalog(CatalogSource):
-    """Real adapter: runs ORACLE_SQL against a read-only cursor. Untested here
-    (no Oracle in the dev env); the mapping logic is tested via MockCatalog."""
+    """Real adapter (HYBRID): the table list is read from ALL_TABLES for every
+    licensed/shared (+ extra) owner, then renamed to its canonical APPS synonym
+    when one exists, else kept owner-qualified. BULK set-based reads, cached once.
 
-    def __init__(self, cursor):
+    The grouping/renaming/caching logic is tested via a fake cursor in
+    test_extract; the live SQL still needs a real read-only EBS account (with
+    dictionary access) to confirm against a given instance. Flexfield/lookup
+    enrichment for live extraction is a documented follow-up -- the extractor
+    degrades gracefully when those are absent."""
+
+    def __init__(self, cursor, extra_owners=(), skip_suffixes=_DEFAULT_SKIP_SUFFIXES):
         self.cur = cursor
+        self._extra = [self._ident(o) for o in extra_owners if self._ident(o)]
+        self._skip_suffixes = tuple(s.upper() for s in skip_suffixes)
+        self._sql = _queries(self._scope())
+        self._canon: dict[tuple, str] = {}        # (OWNER, TABLE) -> canonical name
+        self._tables: list[str] | None = None
+        self._cols: dict[str, list[RawColumn]] = {}
+        self._pk: dict[str, list[str]] = {}
+        self._fks: list[RawFk] | None = None
 
-    def _rows(self, key, **bind):
-        self.cur.execute(ORACLE_SQL[key], bind)
-        return self.cur.fetchall()
+    @staticmethod
+    def _ident(owner: str) -> str:
+        """Sanitize an owner name to a bare SQL identifier (it is inlined)."""
+        return "".join(ch for ch in owner.upper() if ch.isalnum() or ch == "_")
+
+    def _scope(self) -> str:
+        sql = _SCOPE_BASE
+        for o in self._extra:
+            sql += f" UNION ALL SELECT '{o}' AS owner FROM dual"
+        return sql
+
+    def _skip(self, table_name: str) -> bool:
+        tu = table_name.upper()
+        return "$" in tu or tu.endswith(self._skip_suffixes)
+
+    def _load(self) -> None:
+        if self._tables is not None:
+            return
+        # 1. synonym overlay first: base (owner, table) -> canonical APPS name
+        self.cur.execute(self._sql["synonyms"])
+        syn = {(o.upper(), t.upper()): name.lower()
+               for name, o, t in self.cur.fetchall()}
+        # 2. table list from ALL_TABLES; canonical = synonym name, else owner.table
+        self.cur.execute(self._sql["tables"])
+        for owner, tname in self.cur.fetchall():
+            if self._skip(tname):
+                continue
+            key = (owner.upper(), tname.upper())
+            self._canon[key] = syn.get(key, f"{owner}.{tname}".lower())
+        self._tables = sorted(set(self._canon.values()))
+        # 3. columns / 4. PKs, mapped from base (owner, table) to canonical
+        self.cur.execute(self._sql["columns"])
+        for owner, tname, col, dtype, nullable in self.cur.fetchall():
+            c = self._canon.get((owner.upper(), tname.upper()))
+            if c:
+                self._cols.setdefault(c, []).append(
+                    RawColumn(col.lower(), dtype, nullable == "Y"))
+        self.cur.execute(self._sql["primary_key"])
+        for owner, tname, col in self.cur.fetchall():
+            c = self._canon.get((owner.upper(), tname.upper()))
+            if c:
+                self._pk.setdefault(c, []).append(col.lower())
 
     def tables(self):
-        return [r[0].lower() for r in self._rows("tables")]
+        self._load()
+        return list(self._tables)
 
     def columns(self, table):
-        return [RawColumn(r[0].lower(), r[1], r[2] == "Y")
-                for r in self._rows("columns", t=table.upper())]
+        self._load()
+        return list(self._cols.get(table, []))
 
     def primary_key(self, table):
-        return [r[0].lower() for r in self._rows("primary_key", t=table.upper())]
+        self._load()
+        return list(self._pk.get(table, []))
 
     def foreign_keys(self):
-        return [RawFk(r[0].lower(), r[1].lower(), r[2].lower(), r[3].lower())
-                for r in self._rows("foreign_keys")]
+        self._load()
+        if self._fks is None:                 # declared FKs optional; cached like the rest
+            try:
+                self.cur.execute(self._sql["foreign_keys"])
+                out = []
+                for fo, ft, fcol, po, pt, pcol in self.cur.fetchall():
+                    a = self._canon.get((fo.upper(), ft.upper()))
+                    b = self._canon.get((po.upper(), pt.upper()))
+                    if a and b:
+                        out.append(RawFk(a, fcol.lower(), b, pcol.lower()))
+                self._fks = out
+            except Exception:
+                self._fks = []
+        return list(self._fks)
 
 
 # -- a small AP + GL mock instance (the spec's proposed starter modules) ------

@@ -178,11 +178,10 @@ def regular_user_headers(client, admin_headers, user_creds):
     r = client.post("/auth/register", json=user_creds)
     assert r.status_code == 201
     user_id = r.json()["id"]
-    # Admin approves the new user
-    client.patch(f"/admin/users/{user_id}", json={"approval_status": "approved"}, headers=admin_headers)
-    # Activate the user
-    db = next(get_db())
-    pass  # approval via admin endpoint handles is_active too
+    # Admin approves and activates the new user (both fields required — see
+    # test_roles.py's equivalent inline setup for the same pattern)
+    client.patch(f"/admin/users/{user_id}", json={"approval_status": "approved", "is_active": True},
+                headers=admin_headers)
     token = _login(client, user_creds["username"], user_creds["password"])
     return {"Authorization": f"Bearer {token}"}
 

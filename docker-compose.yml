@@ -52,7 +52,9 @@ services:
 
   # ── FastAPI ───────────────────────────────────────────────
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     container_name: ai-api
     restart: always
     environment:
@@ -135,6 +137,7 @@ services:
       - "8000:8000"
     volumes:
       - chroma_data:/app/chroma_db
+      - nlsql_data:/app/nlsql_data
     depends_on:
       postgres:
         condition: service_healthy
@@ -157,3 +160,4 @@ volumes:
   pgdata:
   ollama_data:
   chroma_data:
+  nlsql_data:

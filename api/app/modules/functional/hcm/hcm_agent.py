@@ -173,6 +173,7 @@ async def run_inquiry(
 
 class AskRequest(BaseModel):
     question: str
+    environment: Optional[str] = None
 
 
 @router.post("/ask")
@@ -190,23 +191,51 @@ async def ask(
             yield _sse({"type": "error", "content": "Please enter a question."})
             return
 
-        # Ground in the knowledge base when there's a confident match (web fallback off).
-        rag_context = ""
-        try:
-            rag_context = rag_service.query_rag(question, allow_web_fallback=False)
-        except Exception:
-            rag_context = ""
-        if rag_context:
-            yield _sse({"type": "phase", "content": "📚 Grounding answer in the knowledge base..."})
+        # Data questions against a registered environment try NL->SQL first
+        # (auto-executed, read-only, capped rows — see nl_sql_service.
+        # try_answer_data_question). Anything it doesn't handle (no
+        # environment, not a data question, missing grant, or the SQL just
+        # can't run) falls straight through to the existing RAG-grounded
+        # advisor, unchanged.
+        env_row = None
+        if payload.environment:
+            env_row = db.query(models.EbsEnvironment).filter(
+                models.EbsEnvironment.name == payload.environment,
+                models.EbsEnvironment.is_active == True,   # noqa: E712
+            ).first()
 
-        system = prompts.get_prompt("hcm.system")
-        user_content = question if not rag_context else (
-            f"[KNOWLEDGE BASE]\n{rag_context}\n[END KNOWLEDGE BASE]\n\n"
-            "Answer the QUESTION using the knowledge base above as the authoritative source and "
-            "cite the source filename for specifics. If it isn't covered, say so and give only "
-            f"well-established EBS HCM guidance.\n\nQUESTION: {question}"
-        )
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user_content}]
+        from app.modules.dba.nl_sql import nl_sql_service
+        nlsql_result = None
+        if env_row is not None and nl_sql_service.looks_like_data_question(question):
+            yield _sse({"type": "phase", "content": "🔎 Data question detected — trying NL→SQL..."})
+            nlsql_result = nl_sql_service.try_answer_data_question(db, current_user, env_row, question)
+            if nlsql_result is None:
+                yield _sse({"type": "phase", "content": "↩️ NL→SQL unavailable for this question — falling back to general advice."})
+
+        if nlsql_result is not None:
+            yield _sse({"type": "data", "source": "nl_sql", "sql": nlsql_result["sql"],
+                        "rows": nlsql_result["rows"]})
+            messages = nl_sql_service.build_interpret_messages(question, nlsql_result)
+            endpoint = "hcm.ask.nl_sql"
+        else:
+            # Ground in the knowledge base when there's a confident match (web fallback off).
+            rag_context = ""
+            try:
+                rag_context = rag_service.query_rag(question, allow_web_fallback=False)
+            except Exception:
+                rag_context = ""
+            if rag_context:
+                yield _sse({"type": "phase", "content": "📚 Grounding answer in the knowledge base..."})
+
+            system = prompts.get_prompt("hcm.system")
+            user_content = question if not rag_context else (
+                f"[KNOWLEDGE BASE]\n{rag_context}\n[END KNOWLEDGE BASE]\n\n"
+                "Answer the QUESTION using the knowledge base above as the authoritative source and "
+                "cite the source filename for specifics. If it isn't covered, say so and give only "
+                f"well-established EBS HCM guidance.\n\nQUESTION: {question}"
+            )
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": user_content}]
+            endpoint = "hcm.ask"
 
         out, usage = [], {}
         try:
@@ -217,7 +246,7 @@ async def ask(
             yield _sse({"type": "error", "content": f"AI answer failed: {exc}"})
             return
 
-        _record_tokens(current_user, provider, model, "hcm.ask", messages, out, usage)
+        _record_tokens(current_user, provider, model, endpoint, messages, out, usage)
         yield _sse({"type": "analysis_complete", "content": "".join(out)})
         yield "data: [DONE]\n\n"
 

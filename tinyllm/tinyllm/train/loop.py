@@ -1,9 +1,11 @@
 """Training loop: batching, warmup+cosine LR, grad clip, periodic eval, ckpt.
 
 Eval metrics (on UNSEEN schemas):
-  val_loss     teacher-forced cross-entropy
+  val_loss     teacher-forced cross-entropy -- the CHECKPOINT-SELECTION metric
+               (its minimum on unseen schemas is the best-generalizing step;
+               exact_match keeps rising past it as the model starts to overfit)
   token_acc    teacher-forced next-token accuracy
-  exact_match  greedy-decoded SQL == gold (the headline generalization metric)
+  exact_match  greedy-decoded SQL == gold (logged; NOT used to select, see above)
   valid_sql    greedy-decoded SQL parses as Oracle (sqlglot)
 
 Execution accuracy (run the SQL, compare result sets) is the eventual upgrade
@@ -64,7 +66,11 @@ class Trainer:
     def train(self):
         cfg = self.cfg
         rng = random.Random(0)
-        step, best_em = 0, -1.0
+        # Checkpoint on LOWEST val_loss, not highest exact_match: exact_match keeps
+        # climbing into the overfit zone (it rewards memorizing the train
+        # distribution), while val_loss on unseen schemas turns up when the model
+        # starts overfitting -- its minimum is the best-generalizing step.
+        step, best_val = 0, float("inf")
         t0 = time.time()
         self.model.train()
         while step < cfg.total_steps:
@@ -95,12 +101,13 @@ class Trainer:
                     print(f"  [eval @ {step}] val_loss {m['val_loss']:.3f}  "
                           f"token_acc {m['token_acc']:.3f}  exact {m['exact_match']:.3f}  "
                           f"valid_sql {m['valid_sql']:.3f}")
-                    if m["exact_match"] >= best_em:
-                        best_em = m["exact_match"]
+                    if m["val_loss"] < best_val:
+                        best_val = m["val_loss"]
                         self.save_checkpoint(Path(cfg.ckpt_dir) / "model_best.pt", step, m)
+                        print(f"    ^ checkpoint saved (best val_loss {best_val:.4f})")
                     self.model.train()
-        print(f"done. best exact_match {best_em:.3f} in {time.time()-t0:.0f}s")
-        return best_em
+        print(f"done. best val_loss {best_val:.4f} in {time.time()-t0:.0f}s")
+        return best_val
 
     @torch.no_grad()
     def evaluate(self):

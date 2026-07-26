@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, TIMESTAMP, Text
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, TIMESTAMP, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.expression import text
 from sqlalchemy.orm import relationship
@@ -120,3 +120,92 @@ class PatchRun(Base):
     completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
     user = relationship("User", foreign_keys=[user_id], backref="patch_runs")
+
+
+class PatchTarget(Base):
+    """Admin-defined target patch baseline for one component of one
+    environment — what compute_gaps() diffs the live AppliedPatchSnapshot
+    against (per the admin-defined-target-list design decision)."""
+    __tablename__ = "patch_targets"
+    __table_args__ = (
+        UniqueConstraint('environment_id', 'component', name='ux_patch_targets_env_component'),
+    )
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    environment_id = Column(Integer, ForeignKey("ebs_environments.id", ondelete="CASCADE"), nullable=False)
+    component = Column(String(50), nullable=False)      # 'db_home' | 'grid' | 'weblogic' | fmw home label | 'adop'
+    home_path = Column(String(512), nullable=True)       # OPatch-managed home used for the scan (unused for 'adop' — that's a live ad_bugs SQL check, not an OPatch home)
+    target_patches = Column(JSONB, nullable=False, server_default='[]')  # [{"patch_number","label","required_by"}]
+    notes = Column(Text, nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class AppliedPatchSnapshot(Base):
+    """Result of a live `opatch lspatches` scan for one component/home —
+    append-only history; gap computation reads the latest row per component."""
+    __tablename__ = "applied_patch_snapshots"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    environment_id = Column(Integer, ForeignKey("ebs_environments.id", ondelete="CASCADE"), nullable=False)
+    component = Column(String(50), nullable=False)
+    home_path = Column(String(512), nullable=True)
+    applied_patches = Column(JSONB, nullable=False, server_default='[]')   # ["36420641", ...]
+    raw_output = Column(Text, nullable=True)
+    scan_status = Column(String(20), nullable=False, server_default='ok')  # ok|error|unreachable
+    scan_error = Column(Text, nullable=True)
+    scanned_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    scanned_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # null if scheduled
+
+
+class PatchFileScanConfig(Base):
+    """Admin-defined run-edition filesystem root to scan for file-version
+    drift — one `find` pass over the WHOLE run filesystem (every product top
+    beneath it: ap/, gl/, fnd/, ... in one go), not one config per product.
+    The product each file belongs to is derived per-file from its path
+    relative to run_fs_path (EBS's $APPL_TOP/<product>/... convention) —
+    see patch_file_gap_service.run_file_gap_scan."""
+    __tablename__ = "patch_file_scan_configs"
+    __table_args__ = (
+        UniqueConstraint('environment_id', 'run_fs_path', name='ux_patch_file_scan_env_path'),
+    )
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    environment_id = Column(Integer, ForeignKey("ebs_environments.id", ondelete="CASCADE"), nullable=False)
+    label = Column(String(100), nullable=True)            # e.g. 'Run edition APPL_TOP', 'Node2 run fs'
+    run_fs_path = Column(String(512), nullable=False)      # whole run-fs root, e.g. /u01/.../apps_st/appl
+    file_globs = Column(JSONB, nullable=False, server_default=
+        '["*.pls","*.pkb","*.pks","*.sql","*.fmb","*.rdf","*.java"]')
+    notes = Column(Text, nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
+class PatchFileInventory(Base):
+    """Upsert-latest inventory of every file the file-version scan sees —
+    filesystem version AND AD_FILES/AD_FILE_VERSIONS-registered version for
+    EVERY file (matched, mismatched, and not-registered), not just drift
+    (Finding's job). One row per (environment_id, product, filename), updated
+    in place every scan — bounded by distinct files ever seen, not
+    files x scans (append-only here would add tens of thousands of rows per
+    scan of a full run filesystem)."""
+    __tablename__ = "patch_file_inventory"
+    __table_args__ = (
+        UniqueConstraint('environment_id', 'product', 'filename',
+                         name='ux_patch_file_inventory_env_product_filename'),
+        Index('ix_patch_file_inventory_env_status', 'environment_id', 'match_status'),
+    )
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    environment_id = Column(Integer, ForeignKey("ebs_environments.id", ondelete="CASCADE"), nullable=False)
+    product = Column(String(50), nullable=False)
+    filename = Column(String(255), nullable=False)
+    path = Column(String(512), nullable=False)          # last-seen full path
+    fs_version = Column(String(100), nullable=True)
+    db_version = Column(String(100), nullable=True)     # null = not registered in AD_FILES
+    match_status = Column(String(20), nullable=False)   # 'match' | 'mismatch' | 'fs_only'
+    last_scan_run_id = Column(Integer, ForeignKey("diagnostic_runs.id", ondelete="SET NULL"), nullable=True)
+    last_scanned_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))

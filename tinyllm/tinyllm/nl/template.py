@@ -89,7 +89,7 @@ def _filters_phrase(where: list[Predicate]) -> str:
             continue
         label = p.column.column.label
         if p.op == Op.YEAR_EQ:
-            out += f" in {p.value}"
+            out += f" with {label} in {p.value}"
         elif label == "org id":
             out += f" for operating unit {p.value}"
         elif isinstance(p.value, str):

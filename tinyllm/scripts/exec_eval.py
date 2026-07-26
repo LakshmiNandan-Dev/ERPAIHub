@@ -7,6 +7,9 @@ same rows as the gold SQL? (the real text->SQL metric, vs cosmetic exact-match).
 Compares greedy decoding vs graph-constrained (picard) decoding. Reports
 execution accuracy, exact-match, and the gap between them -- the "equivalent but
 not identical" SQL that exact-match unfairly penalizes.
+
+Both predictions go through `schema_repair` (as the serving path does), so the
+number reported here is the real end-to-end accuracy, not the pre-repair decode.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tinyllm import generate_example, serialize_schema  # noqa: E402
-from tinyllm.decode import picard_generate  # noqa: E402
+from tinyllm.decode import picard_generate, schema_repair  # noqa: E402
 from tinyllm.eval import ExecHarness, execution_match  # noqa: E402
 from tinyllm.model import collate  # noqa: E402
 from tinyllm.tokenizer import BPETokenizer  # noqa: E402
@@ -67,6 +70,7 @@ def main():
                                       ex.schema, beam=args.beam, max_len=args.max_len)[0],
         }
         for mode, pred in preds.items():
+            pred = schema_repair(pred, ex.question, ex.schema)   # mirror the serving path
             exact = pred.strip() == ex.sql.strip()
             m = execution_match(harness, ex.sql, pred)
             stats[mode]["exact"] += int(exact)

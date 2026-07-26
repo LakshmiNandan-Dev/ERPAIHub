@@ -17,8 +17,13 @@ MEASURE = {
     "MIN": ["lowest {m}", "minimum {m}", "min {m}", "the lowest {m}", "smallest {m}"],
 }
 # COUNT counts rows of a thing, so it phrases on the entity, not a measure column.
-# Noun phrases only, so they compose inside the interrogative frames below.
+# Noun phrases (compose inside interrogative frames / top-N "by {m}").
 COUNT_MEASURE = ["number of {d}", "count of {d}", "the number of {d}", "total number of {d}"]
+# Standalone COUNT phrasings -- "how many" is the most common user form.
+COUNT_NOGROUP = ["how many {d}", "how many {d} are there", "number of {d}", "count of {d}",
+                 "the number of {d}", "total number of {d}", "count the {d}"]
+COUNT_GROUP = ["how many {d} {group}", "number of {d} {group}", "count of {d} {group}",
+               "how many {d} are there {group}", "{d} count {group}"]
 
 # ungrouped totals ("what is the total amount", "number of invoices")
 NOGROUP = ["{measure}", "what is the {measure}?", "what's the {measure}?",
@@ -40,12 +45,13 @@ AGG_FRAMES = [
     "find {measure} {group}",
 ]
 
-# -- top-N -----------------------------------------------------------------
+# -- top-N (the {m} measure phrase already carries the function, e.g.
+#    "total amount" / "highest amount" / "number of invoices") ---------------
 TOPN = [
     "top {n} {g} by {m}",
-    "the {n} highest {g} by {m}",
-    "the {n} {g} with the most {m}",
-    "{n} largest {g} by {m}",
+    "the top {n} {g} by {m}",
+    "top {n} {g} ranked by {m}",
+    "{n} {g} with the largest {m}",
 ]
 
 # -- HAVING ----------------------------------------------------------------
@@ -57,7 +63,11 @@ HAVING = [
 ]
 
 # -- filter phrasings ------------------------------------------------------
-DATE = ["in {y}", "for {y}", "during {y}", "for fiscal year {y}"]
+# Always NAME the filtered date column ({label}). EBS tables carry several dates
+# (invoice_date, creation_date, ...); a bare "in {y}" leaves which one ambiguous,
+# so the model can only guess. Naming it is the disambiguating training signal.
+DATE = ["with {label} in {y}", "{label} in {y}", "with {label} during {y}",
+        "by {label} in {y}", "with {label} in fiscal year {y}"]
 ORG = ["for operating unit {o}", "for org {o}", "in operating unit {o}", "for ou {o}"]
 LOOKUP = ["where {label} is {v}", "that are {v}", "with {label} {v}", "only {v} ones"]
 
@@ -87,11 +97,17 @@ WINDOW = [
 LIST_VERBS = ["list", "show", "show me", "display", "get", "give me", "find"]
 
 # -- entity-name cleanup ---------------------------------------------------
-_TABLE_SUFFIXES = ["_headers_all", "_headers", "_lines_all", "_lines", "_all", "_vl", "_tl", "_v"]
+# lines tables KEEP "line" so they read distinctly from their header (counting
+# "invoices" vs "invoice lines" must not collapse to the same phrase).
+_LINE_SUFFIXES = ["_lines_all", "_lines"]
+_TABLE_SUFFIXES = ["_headers_all", "_headers", "_all", "_vl", "_tl", "_v"]
 
 
 def entity_label(table: str) -> str:
     """payment_headers_all -> 'payment'; receipt_lines_all -> 'receipt line'."""
+    for suf in _LINE_SUFFIXES:
+        if table.endswith(suf):
+            return (table[: -len(suf)] + "_line").replace("_", " ")
     for suf in _TABLE_SUFFIXES:
         if table.endswith(suf):
             return table[: -len(suf)].replace("_", " ")
@@ -99,8 +115,10 @@ def entity_label(table: str) -> str:
 
 
 def pluralize(word: str) -> str:
-    if word.endswith(("s", "x", "ch", "sh")):
+    if word.endswith(("x", "ch", "sh", "ss", "z")):
         return word + "es"
+    if word.endswith("s"):                       # already plural (invoices, suppliers)
+        return word
     if word.endswith("y") and len(word) > 1 and word[-2] not in "aeiou":
         return word[:-1] + "ies"
     return word + "s"

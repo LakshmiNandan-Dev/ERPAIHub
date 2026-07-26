@@ -80,11 +80,31 @@ from app.schemas.sso import (
     SsoSettingsUpdate,
     SsoStatusOut,
 )
+from app.schemas.nl_sql_settings import (
+    NlSqlChatSettingsOut,
+    NlSqlChatSettingsUpdate,
+)
 from app.schemas.integration import (
     IntegrationBase,
     IntegrationCreate,
     IntegrationUpdate,
     IntegrationOut,
+)
+from app.schemas.tickets import (
+    TicketCreate,
+    TicketFromFinding,
+    TicketUpdate,
+    TicketOut,
+)
+from app.schemas.patching import (
+    PatchTargetCreate,
+    PatchTargetUpdate,
+    PatchTargetOut,
+    PatchFileScanConfigCreate,
+    PatchFileScanConfigUpdate,
+    PatchFileScanConfigOut,
+    PatchFileInventoryOut,
+    PatchFileInventoryPage,
 )
 
 __all__ = [
@@ -115,6 +135,14 @@ __all__ = [
     "ConfigServerOut", "ConfigEnvironmentOut", "ConfigLlmOut",
     # sso
     "SsoSettingsOut", "SsoSettingsUpdate", "SsoStatusOut",
+    # nl-sql chat settings
+    "NlSqlChatSettingsOut", "NlSqlChatSettingsUpdate",
     # integration
     "IntegrationBase", "IntegrationCreate", "IntegrationUpdate", "IntegrationOut",
+    # tickets
+    "TicketCreate", "TicketFromFinding", "TicketUpdate", "TicketOut",
+    # patching (patch gap targets)
+    "PatchTargetCreate", "PatchTargetUpdate", "PatchTargetOut",
+    "PatchFileScanConfigCreate", "PatchFileScanConfigUpdate", "PatchFileScanConfigOut",
+    "PatchFileInventoryOut", "PatchFileInventoryPage",
 ]

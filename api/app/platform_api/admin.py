@@ -555,6 +555,140 @@ def test_environment(env_id: int,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Patch targets (admin-defined baseline for patch gap analysis)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/patch-targets", response_model=List[schemas.PatchTargetOut])
+def list_patch_targets(environment_id: Optional[int] = None,
+                       db: Session = Depends(database.get_db),
+                       _: models.User = Depends(get_current_admin)):
+    q = db.query(models.PatchTarget)
+    if environment_id is not None:
+        q = q.filter(models.PatchTarget.environment_id == environment_id)
+    return q.order_by(models.PatchTarget.environment_id.asc(), models.PatchTarget.component.asc()).all()
+
+
+@router.post("/patch-targets", response_model=schemas.PatchTargetOut, status_code=status.HTTP_201_CREATED)
+def create_patch_target(payload: schemas.PatchTargetCreate,
+                        db: Session = Depends(database.get_db),
+                        admin: models.User = Depends(get_current_admin)):
+    env = db.query(models.EbsEnvironment).filter(models.EbsEnvironment.id == payload.environment_id).first()
+    if not env:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    existing = db.query(models.PatchTarget).filter(
+        models.PatchTarget.environment_id == payload.environment_id,
+        models.PatchTarget.component == payload.component,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"A patch target for component '{payload.component}' already exists on this environment.")
+    t = models.PatchTarget(
+        environment_id=payload.environment_id, component=payload.component,
+        home_path=payload.home_path, target_patches=payload.target_patches,
+        notes=payload.notes, updated_by=admin.id,
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@router.patch("/patch-targets/{target_id}", response_model=schemas.PatchTargetOut)
+def update_patch_target(target_id: int, payload: schemas.PatchTargetUpdate,
+                        db: Session = Depends(database.get_db),
+                        admin: models.User = Depends(get_current_admin)):
+    t = db.query(models.PatchTarget).filter(models.PatchTarget.id == target_id).first()
+    if not t:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patch target not found")
+    data = payload.model_dump(exclude_unset=True)
+    for key, val in data.items():
+        setattr(t, key, val)
+    t.updated_by = admin.id
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@router.delete("/patch-targets/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_patch_target(target_id: int,
+                        db: Session = Depends(database.get_db),
+                        _: models.User = Depends(get_current_admin)):
+    t = db.query(models.PatchTarget).filter(models.PatchTarget.id == target_id).first()
+    if not t:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patch target not found")
+    db.delete(t)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Patch file scan configs (admin-defined run-fs root for file-version drift
+# verification against AD_FILES/AD_FILE_VERSIONS — patch_file_gap_service)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/patch-file-scan-configs", response_model=List[schemas.PatchFileScanConfigOut])
+def list_patch_file_scan_configs(environment_id: Optional[int] = None,
+                                 db: Session = Depends(database.get_db),
+                                 _: models.User = Depends(get_current_admin)):
+    q = db.query(models.PatchFileScanConfig)
+    if environment_id is not None:
+        q = q.filter(models.PatchFileScanConfig.environment_id == environment_id)
+    return q.order_by(models.PatchFileScanConfig.environment_id.asc(),
+                      models.PatchFileScanConfig.run_fs_path.asc()).all()
+
+
+@router.post("/patch-file-scan-configs", response_model=schemas.PatchFileScanConfigOut,
+            status_code=status.HTTP_201_CREATED)
+def create_patch_file_scan_config(payload: schemas.PatchFileScanConfigCreate,
+                                  db: Session = Depends(database.get_db),
+                                  admin: models.User = Depends(get_current_admin)):
+    env = db.query(models.EbsEnvironment).filter(models.EbsEnvironment.id == payload.environment_id).first()
+    if not env:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
+    existing = db.query(models.PatchFileScanConfig).filter(
+        models.PatchFileScanConfig.environment_id == payload.environment_id,
+        models.PatchFileScanConfig.run_fs_path == payload.run_fs_path,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"A file scan config for '{payload.run_fs_path}' already exists on this environment.")
+    c = models.PatchFileScanConfig(
+        environment_id=payload.environment_id, label=payload.label, run_fs_path=payload.run_fs_path,
+        file_globs=payload.file_globs, notes=payload.notes, updated_by=admin.id,
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+@router.patch("/patch-file-scan-configs/{config_id}", response_model=schemas.PatchFileScanConfigOut)
+def update_patch_file_scan_config(config_id: int, payload: schemas.PatchFileScanConfigUpdate,
+                                  db: Session = Depends(database.get_db),
+                                  admin: models.User = Depends(get_current_admin)):
+    c = db.query(models.PatchFileScanConfig).filter(models.PatchFileScanConfig.id == config_id).first()
+    if not c:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File scan config not found")
+    data = payload.model_dump(exclude_unset=True)
+    for key, val in data.items():
+        setattr(c, key, val)
+    c.updated_by = admin.id
+    db.commit()
+    db.refresh(c)
+    return c
+
+
+@router.delete("/patch-file-scan-configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_patch_file_scan_config(config_id: int,
+                                  db: Session = Depends(database.get_db),
+                                  _: models.User = Depends(get_current_admin)):
+    c = db.query(models.PatchFileScanConfig).filter(models.PatchFileScanConfig.id == config_id).first()
+    if not c:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File scan config not found")
+    db.delete(c)
+    db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LLM credentials
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -721,6 +855,30 @@ def update_sso(payload: schemas.SsoSettingsUpdate,
     db.commit()
     db.refresh(s)
     return _sso_out(s)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NL-SQL chat settings (single row) — controls reply verbosity in the general
+# Chat Assistant's inline data-question intent, see platform_api/chat.py
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/nl-sql-chat-settings", response_model=schemas.NlSqlChatSettingsOut)
+def get_nl_sql_chat_settings(db: Session = Depends(database.get_db), _: models.User = Depends(get_current_admin)):
+    from app.modules.dba.nl_sql.nl_sql_service import get_chat_settings
+    return get_chat_settings(db)
+
+
+@router.put("/nl-sql-chat-settings", response_model=schemas.NlSqlChatSettingsOut)
+def update_nl_sql_chat_settings(payload: schemas.NlSqlChatSettingsUpdate,
+                                db: Session = Depends(database.get_db),
+                                admin: models.User = Depends(get_current_admin)):
+    from app.modules.dba.nl_sql.nl_sql_service import get_chat_settings
+    s = get_chat_settings(db)
+    s.show_technical_details = payload.show_technical_details
+    s.updated_by = admin.id
+    db.commit()
+    db.refresh(s)
+    return s
 
 
 @router.post("/llm-credentials/{cred_id}/test")

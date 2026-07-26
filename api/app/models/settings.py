@@ -85,6 +85,20 @@ class AgentLlmPolicy(Base):
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 
+class NlSqlChatSettings(Base):
+    """Single-row store (id=1) controlling how the inline NL-SQL data-question
+    intent in the general Chat Assistant formats its replies. Regular users
+    only need the plain-English answer; the schema-valid/explain-ok/note
+    detail is diagnostic and otherwise only visible to admins via the audit
+    log — admin can opt back into showing it in-chat."""
+    __tablename__ = "nl_sql_chat_settings"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    show_technical_details = Column(Boolean, server_default='FALSE', nullable=False)
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+
+
 class AgentPrompt(Base):
     """
     Admin override for an agent prompt. The canonical default for each prompt

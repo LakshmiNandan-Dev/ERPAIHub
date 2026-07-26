@@ -6,13 +6,16 @@ import DeploymentCenter from '../Deployment/DeploymentCenter';
 import PerformanceAgent from '../Performance/PerformanceAgent';
 import AdminConsole from '../Admin/AdminConsole';
 import MonitoringConsole from '../Monitoring/MonitoringConsole';
+import FindingsFeed from '../Monitoring/FindingsFeed';
+import EnvironmentCompare from '../Compare/EnvironmentCompare';
 import CloneCenter from '../Cloning/CloneCenter';
 import PatchCenter from '../Patching/PatchCenter';
+import NlSqlAgent from '../NlSql/NlSqlAgent';
 import HcmAgent from '../Functional/HcmAgent';
 import ReactMarkdown from 'react-markdown';
 import {
   BrainCircuit, MessageSquarePlus, Trash2, Settings2, LogOut,
-  Server, Globe, Bot, Cpu, Pencil, Check, X, ShieldCheck, KeyRound, Activity
+  Server, Globe, Bot, Cpu, Pencil, Check, X, ShieldCheck, KeyRound, Activity, Bell, GitCompare
 } from 'lucide-react';
 
 export default function ChatLayout({ setAuthToken }) {
@@ -32,9 +35,12 @@ export default function ChatLayout({ setAuthToken }) {
   const [showPerformance, setShowPerformance] = useState(false);
   const [showCloning, setShowCloning] = useState(false);
   const [showPatching, setShowPatching] = useState(false);
+  const [showNlSql, setShowNlSql] = useState(false);
   const [showHcm, setShowHcm] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [showMonitoring, setShowMonitoring] = useState(false);
+  const [showFindings, setShowFindings] = useState(false);
+  const [showCompare, setShowCompare] = useState(false);
 
   // Change-password modal
   const [showChangePw, setShowChangePw] = useState(false);
@@ -119,7 +125,7 @@ export default function ChatLayout({ setAuthToken }) {
   const role = String(user.role || (user.is_admin ? 'admin' : 'user')).toLowerCase();
   const allowedAgents = new Set(user.allowed_agents || []);
   // Maps an agent-dropdown value to its backend gated-agent name.
-  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching', hcm: 'hcm' };
+  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching', hcm: 'hcm', nl_sql: 'nl_sql' };
   const canAgent = (name) => role === 'admin' || allowedAgents.has(name);
   const canInvokeAgents = role === 'admin' || allowedAgents.size > 0;
   const canAdminConsole = role === 'admin' || role === 'dba';
@@ -170,6 +176,8 @@ export default function ChatLayout({ setAuthToken }) {
       setShowPatching(true);
     } else if (val === 'hcm') {
       setShowHcm(true);
+    } else if (val === 'nl_sql') {
+      setShowNlSql(true);
     }
   };
 
@@ -557,6 +565,7 @@ export default function ChatLayout({ setAuthToken }) {
                 <option value="cloning" disabled={!canAgent('cloning')}>🧬 EBS Cloning Agent{canAgent('cloning') ? '' : ' 🔒'}</option>
                 <option value="patching" disabled={!canAgent('patching')}>🩹 EBS Patching Agent{canAgent('patching') ? '' : ' 🔒'}</option>
                 <option value="hcm" disabled={!canAgent('hcm')}>🧑‍💼 HCM &amp; Payroll Agent{canAgent('hcm') ? '' : ' 🔒'}</option>
+                <option value="nl_sql" disabled={!canAgent('nl_sql')}>🗣️ Ask Your Data{canAgent('nl_sql') ? '' : ' 🔒'}</option>
                 <option value="finance" disabled>💸 Cash Management Agent (Soon)</option>
                 <option value="purchasing" disabled>🛒 Purchasing PO Agent (Soon)</option>
               </select>
@@ -592,6 +601,16 @@ export default function ChatLayout({ setAuthToken }) {
                 {role === 'admin' && (
                   <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowMonitoring(true); }}>
                     <Activity size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Monitoring Console
+                  </button>
+                )}
+                {canAgent('performance') && (
+                  <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowFindings(true); }}>
+                    <Bell size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Findings
+                  </button>
+                )}
+                {(canAgent('performance') || canAgent('patching')) && (
+                  <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setShowCompare(true); }}>
+                    <GitCompare size={13} style={{ marginRight: '0.4rem', verticalAlign: 'middle' }} />Environment Compare
                   </button>
                 )}
                 <button className="dropdown-item" onClick={() => { setShowUserMenu(false); setSettingsTab('servers'); setShowSettingsModal(true); }}>
@@ -850,6 +869,12 @@ export default function ChatLayout({ setAuthToken }) {
       {showPerformance && (
         <PerformanceAgent onClose={() => { setShowPerformance(false); setActiveAgent('diagnostic'); }} />
       )}
+      {showFindings && (
+        <FindingsFeed onClose={() => { setShowFindings(false); setActiveAgent('diagnostic'); }} />
+      )}
+      {showCompare && (
+        <EnvironmentCompare onClose={() => { setShowCompare(false); setActiveAgent('diagnostic'); }} />
+      )}
       {showDeployments && (
         <DeploymentCenter
           onClose={() => { setShowDeployments(false); setSelectedHistoryRunId(null); setActiveAgent('diagnostic'); }}
@@ -864,6 +889,9 @@ export default function ChatLayout({ setAuthToken }) {
       )}
       {showHcm && (
         <HcmAgent onClose={() => { setShowHcm(false); setActiveAgent('diagnostic'); }} />
+      )}
+      {showNlSql && (
+        <NlSqlAgent onClose={() => { setShowNlSql(false); setActiveAgent('diagnostic'); }} />
       )}
       {showAdmin && <AdminConsole onClose={() => setShowAdmin(false)} role={role} currentUser={user} />}
       {showMonitoring && <MonitoringConsole onClose={() => setShowMonitoring(false)} />}

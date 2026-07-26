@@ -8,8 +8,11 @@ live over SSH — `adop -status`, `opatch lspatches` (already-applied) and
 explicitly armed for live execution. Everything degrades to the simulator when
 SSH or credentials are unavailable, so the agent never hard-fails.
 """
+import re
+
 from app import models
 from app.core import crypto
+from app.core.safety import command_validator
 
 SSH_TIMEOUT = 15.0
 CMD_TIMEOUT = 600.0    # adop phases can run for many minutes
@@ -91,6 +94,8 @@ def live_adop_status(creds: dict, run_fs: str) -> dict:
     """Run `adop -status` live (read-only). Returns {rc, output} or {error}."""
     if not (creds.get("ssh") and creds["ssh"].get("host")):
         return {"error": "no SSH server configured for this environment"}
+    if not command_validator.validate_path(run_fs):
+        return {"error": "unsafe run_fs path"}
     try:
         client = _connect(creds["ssh"])
         try:
@@ -106,11 +111,14 @@ def live_opatch_lspatches(creds: dict, home: str, patch: str) -> dict:
     """Is `patch` already present in `home`? (opatch lspatches) — read-only."""
     if not (creds.get("ssh") and creds["ssh"].get("host")):
         return {"error": "no SSH server configured"}
+    if not command_validator.validate_path(home):
+        return {"error": "unsafe home path"}
     try:
         client = _connect(creds["ssh"])
         try:
             rc, out = _run(client,
-                f"{home}/OPatch/opatch lspatches 2>&1 | grep -F '{patch}' || true", timeout=120)
+                f"{home}/OPatch/opatch lspatches 2>&1 | grep -F -- {command_validator.quote_arg(patch)} || true",
+                timeout=120)
             return {"rc": rc, "present": bool(out), "output": out}
         finally:
             client.close()
@@ -122,6 +130,8 @@ def live_opatch_conflict(creds: dict, home: str, patch_dir: str) -> dict:
     """opatch prereq conflict check for a home — read-only."""
     if not (creds.get("ssh") and creds["ssh"].get("host")):
         return {"error": "no SSH server configured"}
+    if not (command_validator.validate_path(home) and command_validator.validate_path(patch_dir)):
+        return {"error": "unsafe home/patch_dir path"}
     try:
         client = _connect(creds["ssh"])
         try:
@@ -135,14 +145,99 @@ def live_opatch_conflict(creds: dict, home: str, patch_dir: str) -> dict:
         return {"error": str(exc)[:300]}
 
 
+def live_opatch_list_all(creds: dict, home: str) -> dict:
+    """Full `opatch lspatches` listing for a home — no grep, no interpolated
+    value in the command at all (the safest possible shape, sidesteps the
+    injection class entirely rather than relying on quoting). Used by the
+    patch-gap scan (patch_gap_service.run_gap_scan) to build the "applied
+    patches" inventory. Returns {rc, patches: ["36420641", ...], output} or
+    {error}."""
+    if not command_validator.validate_path(home):
+        return {"error": "unsafe home path"}
+    if not (creds.get("ssh") and creds["ssh"].get("host")):
+        return {"error": "no SSH server configured"}
+    try:
+        client = _connect(creds["ssh"])
+        try:
+            rc, out = _run(client, f"{home}/OPatch/opatch lspatches 2>&1", timeout=120)
+            patches = re.findall(r'^(\d+);', out, re.MULTILINE)
+            return {"rc": rc, "patches": patches, "output": out}
+        finally:
+            client.close()
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+
+_GLOB_RE = re.compile(r'^\*\.[a-zA-Z0-9]{1,10}$')   # only bare "*.ext" tokens allowed
+
+
+def live_file_header_scan(creds: dict, run_fs_path: str, globs: list) -> dict:
+    """Batched $Header version extraction for every file under run_fs_path
+    matching globs — one `find | grep` SSH round-trip covering the WHOLE run
+    filesystem (every product top beneath it: ap/, gl/, fnd/, ... in one
+    pass), not one round-trip per file or per product (file counts across an
+    EBS instance run into the tens of thousands). Used by
+    patch_file_gap_service.run_file_gap_scan to compare against
+    AD_FILES/AD_FILE_VERSIONS. Returns
+    {"files": [{"path", "filename", "fs_version"}], "truncated": bool} or
+    {"error": ...}."""
+    if not (creds.get("ssh") and creds["ssh"].get("host")):
+        return {"error": "no SSH server configured"}
+    if not command_validator.validate_path(run_fs_path):
+        return {"error": "unsafe run_fs path"}
+    safe_globs = [g for g in (globs or []) if _GLOB_RE.match(g)]
+    if not safe_globs:
+        return {"error": "no valid file globs configured"}
+    name_clause = " -o ".join(f"-name '{g}'" for g in safe_globs)
+    cmd = (f"find {run_fs_path} -type f \\( {name_clause} \\) "
+          f"-exec grep -m1 -H '\\$Header' {{}} \\; 2>/dev/null")
+    try:
+        client = _connect(creds["ssh"])
+        try:
+            rc, out = _run(client, cmd, timeout=900)
+        finally:
+            client.close()
+    except Exception as exc:
+        return {"error": str(exc)[:300]}
+
+    lines = out.splitlines()
+    truncated = len(lines) > 50000
+    files = []
+    for line in lines[:50000]:
+        path, _, rest = line.partition(":")
+        m = re.search(r'\$Header:\s*(\S+)\s+([\w.]+)\s', rest)
+        if m:
+            files.append({"path": path, "filename": m.group(1), "fs_version": m.group(2)})
+    return {"files": files, "truncated": truncated}
+
+
 # ── Live destructive phase (opt-in) ───────────────────────────────────────────
 
+_VALID_PHASES = {"prepare", "apply", "finalize", "cutover", "cleanup", "abort", "fs_clone"}
+_VALID_ADOP_MODES = {"online", "downtime", "hotpatch"}
+_VALID_CLEANUP_MODES = {"standard", "full"}
+
+
 def _adop_phase_command(phase: str, ctx: dict) -> str:
-    """Concrete adop command (no ${VAR}) for a live phase run."""
-    workers = ctx.get("APPLY_WORKERS", "8")
-    patch = ctx.get("PATCH_NUMBER", "")
+    """Concrete adop command (no ${VAR}) for a live phase run. Every interpolated
+    value is validated against a known-safe token/enum first — PATCH_NUMBER and
+    APPLY_WORKERS must be plain alnum/dot/dash tokens (no shell significance at
+    all), ADOP_MODE/CLEANUP_MODE/phase must be one of the enum values this
+    codebase actually emits (patching_service.py)."""
+    if phase not in _VALID_PHASES:
+        raise ValueError(f"Unknown adop phase '{phase}'.")
+    workers = str(ctx.get("APPLY_WORKERS", "8"))
+    patch = str(ctx.get("PATCH_NUMBER", ""))
     mode = ctx.get("ADOP_MODE", "online")
     cleanup = ctx.get("CLEANUP_MODE", "standard")
+    if not command_validator.validate_token(workers):
+        raise ValueError(f"Unsafe APPLY_WORKERS value '{workers}'.")
+    if not command_validator.validate_token(patch):
+        raise ValueError(f"Unsafe PATCH_NUMBER value '{patch}'.")
+    if mode not in _VALID_ADOP_MODES:
+        raise ValueError(f"Unknown ADOP_MODE '{mode}'.")
+    if cleanup not in _VALID_CLEANUP_MODES:
+        raise ValueError(f"Unknown CLEANUP_MODE '{cleanup}'.")
     if phase == "apply":
         extra = " apply_mode=downtime" if mode == "downtime" else (" hotpatch=yes" if mode == "hotpatch" else "")
         return f"adop phase=apply patches={patch} workers={workers}{extra}"
@@ -158,8 +253,13 @@ def live_adop_phase(creds: dict, run_fs: str, phase: str, ctx: dict) -> dict:
     site/version if your phase prompts differ."""
     if not (creds.get("ssh") and creds["ssh"].get("host")):
         return {"error": "no SSH server configured for this environment"}
+    if not command_validator.validate_path(run_fs):
+        return {"error": "unsafe run_fs path"}
     feed = [p for p in (creds.get("apps_pwd"), creds.get("weblogic_pwd"), creds.get("system_pwd")) if p]
-    cmd = _adop_phase_command(phase, ctx)
+    try:
+        cmd = _adop_phase_command(phase, ctx)
+    except ValueError as exc:
+        return {"error": str(exc)}
     full = f"bash -lc '{_env_source(run_fs)}; {cmd}'"
     try:
         client = _connect(creds["ssh"])

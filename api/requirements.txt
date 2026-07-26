@@ -22,3 +22,6 @@ oracledb
 cryptography
 redis
 llm-guard
+apscheduler>=3.10,<4.0
+sqlglot>=23
+torch>=2.2
