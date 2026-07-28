@@ -2,7 +2,10 @@
 import pytest
 
 from conftest import parse_sse, _login
+from app import models
+from app.core import crypto
 from app.modules.dba.nl_sql import nl_sql_service
+from app.modules.dba.performance import performance_service as ps
 
 
 class TestPerformanceAgent:
@@ -63,6 +66,112 @@ class TestPerformanceAgent:
         )
         # Should not crash — simulated fallback
         assert r.status_code == 200
+
+
+class _FakeCursor:
+    """Maps an exact SQL string (as _run_real_query executes it) to a canned
+    (description, rows) pair — robust against query text tweaks elsewhere,
+    since it matches by identity with ps._REAL_SQL, not substring sniffing."""
+
+    def __init__(self, responses: dict):
+        self._responses = responses
+        self.description = []
+        self._rows = []
+
+    def execute(self, sql, *a):
+        self.description, self._rows = self._responses.get(sql, ([], []))
+
+    def fetchall(self):
+        return self._rows
+
+
+class TestConcurrentManagerLiveQuery:
+    """Live concurrent_manager diagnostics: queue counts, long-running
+    requests correlated to their Oracle session's current wait event
+    (ORACLE_PROCESS_ID -> V$PROCESS.SPID -> V$SESSION.PADDR), and
+    frequently-erroring programs."""
+
+    def _responses(self):
+        return {
+            ps._REAL_SQL["cm_queue"]: (
+                [("pending",), ("running",), ("completed_1h",), ("errored_1h",)],
+                [(5, 2, 40, 3)],
+            ),
+            ps._REAL_SQL["cm_long_running"]: (
+                [("request_id",), ("program",), ("requestor",), ("running_minutes",),
+                 ("sid",), ("serial_num",), ("wait_event",), ("wait_class",), ("seconds_in_wait",)],
+                [(9001234, "XXAP_CUSTOM_REPORT - Custom AP Report", "SYSADMIN", 95,
+                  142, 5001, "db file sequential read", "User I/O", 88)],
+            ),
+            ps._REAL_SQL["cm_erroring"]: (
+                [("program",), ("error_count_1h",)],
+                [("ARXRWMAI - AutoInvoice Master Program", 4)],
+            ),
+        }
+
+    def test_reshapes_live_rows_into_sim_compatible_shape(self):
+        cursor = _FakeCursor(self._responses())
+        data = ps._real_area_query(cursor, "concurrent_manager")
+
+        assert data["queue"] == {"pending": 5, "running": 2, "completed_1h": 40, "errored_1h": 3}
+        assert len(data["long_running_requests"]) == 1
+        lr = data["long_running_requests"][0]
+        assert lr["request_id"] == 9001234
+        assert lr["running_minutes"] == 95
+        assert lr["sid"] == 142
+        assert lr["serial_num"] == 5001
+        assert lr["wait_event"] == "db file sequential read"
+        assert lr["wait_class"] == "User I/O"
+        assert data["frequently_erroring"] == [
+            {"program": "ARXRWMAI - AutoInvoice Master Program", "error_count_1h": 4}
+        ]
+
+    def test_long_running_request_produces_actionable_finding(self):
+        """extract_findings is unchanged — this just confirms the live shape
+        is fully compatible with the existing (previously simulation-only)
+        finding-extraction logic, including the session/wait detail needed
+        for an action plan (e.g. which SID to investigate or kill)."""
+        cursor = _FakeCursor(self._responses())
+        data = ps._real_area_query(cursor, "concurrent_manager")
+        findings = ps.extract_findings("concurrent_manager", data)
+        assert len(findings) == 2   # long-running request + erroring program
+        req_finding = next(f for f in findings if f["finding_key"] == "req:9001234")
+        assert req_finding["detail"]["sid"] == 142
+        assert req_finding["detail"]["wait_event"] == "db file sequential read"
+
+    def test_run_area_uses_live_path_when_connected(self, client, admin_headers, nonprod_env, db_session, monkeypatch):
+        env = db_session.query(models.EbsEnvironment).filter(
+            models.EbsEnvironment.id == nonprod_env["id"]
+        ).first()
+        env.db_password_enc = crypto.encrypt("dummy")
+        db_session.commit()
+
+        class _FakeConn:
+            def cursor(self_inner): return _FakeCursor(self._responses())
+            def close(self_inner): pass
+
+        import oracledb
+        monkeypatch.setattr(oracledb, "connect", lambda **kw: _FakeConn())
+
+        data, source = ps.run_area("concurrent_manager", env, nonprod_env["name"])
+        assert source == "live"
+        assert data["queue"]["pending"] == 5
+
+    def test_run_area_falls_back_to_simulated_on_query_failure(self, client, admin_headers, nonprod_env, db_session, monkeypatch):
+        env = db_session.query(models.EbsEnvironment).filter(
+            models.EbsEnvironment.id == nonprod_env["id"]
+        ).first()
+        env.db_password_enc = crypto.encrypt("dummy")
+        db_session.commit()
+
+        import oracledb
+        def _raise(**kw):
+            raise Exception("ORA-12541: TNS:no listener")
+        monkeypatch.setattr(oracledb, "connect", _raise)
+
+        data, source = ps.run_area("concurrent_manager", env, nonprod_env["name"])
+        assert source == "simulated"
+        assert "queue" in data   # sim_concurrent_manager's own shape
 
 
 def _fake_propose(db, env, question):
