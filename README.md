@@ -1,6 +1,6 @@
 # OraEBS Agent
 
-An AI-powered developer and DBA workbench for Oracle E-Business Suite (EBS). It bundles four specialized agents — a conversational assistant, an automated code deployment pipeline, a database performance analyzer, and a document knowledge base — all behind a single React UI.
+An AI-powered developer, DBA, and functional workbench for Oracle E-Business Suite (EBS). It bundles a suite of specialized agents — conversational chat, automated code deployment, database performance analysis, environment cloning, patching, environment comparison, scheduled monitoring, natural-language SQL, and an HCM/Payroll functional advisor — backed by a RAG knowledge base and an RLAIF quality auditor, all behind a single React UI.
 
 ---
 
@@ -33,9 +33,15 @@ A streaming chat interface backed by any LLM you configure. Every conversation i
 
 | Provider  | Default model              | What you need     |
 |-----------|----------------------------|-------------------|
-| Ollama    | `llama3.2:1b`              | Ollama running (Docker handles this) |
+| Ollama    | `mistral:7b`                | Ollama running (Docker handles this) |
 | OpenAI    | `gpt-4o-mini`              | OpenAI API key    |
 | Anthropic | `claude-haiku-4-5-20251001`| Anthropic API key |
+| Gemini    | `gemini-2.0-flash`         | Gemini API key    |
+
+The Ollama default is set by `OLLAMA_DEFAULT_MODEL` in `docker-compose.yml` —
+override it there (or per-request from the model manager) to use a lighter
+model like `llama3.2:1b` on constrained hardware, or a heavier one; see
+[Hardware Requirements](#hardware-requirements) above for what each tier costs.
 
 API keys are passed as request headers from the frontend; nothing is stored server-side.
 
@@ -117,7 +123,73 @@ The AI report always follows a fixed structure: executive summary → critical i
 
 ---
 
-### 4. RAG Knowledge Base
+### 4. Cloning Agent
+
+A guided chat interview that walks a DBA through an EBS Rapid Clone and produces a downloadable runbook. Simulator-first — no real execution.
+
+- Collects source instance/SID/hosts, then a **target non-production environment** (registered environments only), target apps host, storage layout (`asm` or `fs`), and DB topology (`single` or `rac`) — plus conditional follow-ups depending on those answers.
+- The target can never be PROD — cloning refuses production targets outright, which is stricter than Patching below (which allows prod under approval).
+- `POST /cloning/agent` drives the interview turn-by-turn; `POST /cloning/` creates and runs the clone; `/{run_id}/override` and `/{run_id}/reject` are the maker-checker approve/reject actions; `GET /cloning/{run_id}/runbook` downloads the resulting procedure document.
+
+---
+
+### 5. Patching Agent
+
+A guided chat interview + simulated patch run + downloadable patch runbook, covering the database tier (RDBMS `ORACLE_HOME` via OPatch + `datapatch`, Grid Infrastructure via `opatchauto`, RAC rolling per node) and the application tier (`adop` online patching, WebLogic, and the FMW component homes). Simulator-first — no real execution.
+
+- Unlike Cloning, **patching a PRODUCTION target is allowed** — but it's gated by the production guard plus maker-checker approval: a different Admin/DBA must call `POST /patching/{run_id}/override` before the run proceeds.
+- **Patch Gap Analysis** (`POST /patching/gap/scan/{environment_id}`, `POST /patching/gap/files/scan/{config_id}`) scans a registered environment or a patch file-set config and reports missing patches/files against what's expected.
+- `GET /patching/{run_id}/adop-status` and `POST /patching/{run_id}/phase` support driving an interactive `adop` run phase-by-phase (prepare / apply / cutover) rather than firing the whole sequence at once.
+
+---
+
+### 6. Environment Compare
+
+Compares two different EBS environments across three independently-gated dimensions, since a real DBA/role split (e.g. patching access without performance access) is common:
+
+| Endpoint | Compares | Requires |
+|----------|----------|----------|
+| `GET /compare/patches` | Patch parity between two environments | `patching` agent access |
+| `POST /compare/performance` | Live performance diagnostics, side by side | `performance` agent access |
+| `POST /compare/config/scan/{environment_id}`, `GET /compare/config` | Configuration drift | `performance` agent access |
+
+---
+
+### 7. Scheduled Monitoring & Tickets
+
+An in-process, thread-based scheduler (`api/app/core/scheduler.py`) runs recurring, delta-aware diagnostic scans per environment on an admin-configured interval and records the results as **Findings**.
+
+- `GET/PUT /monitoring/schedules` — admin configures scan interval per environment.
+- `POST /monitoring/scan/{environment_id}` — trigger a scan on demand.
+- `GET /monitoring/findings`, `GET /monitoring/runs` — browse findings and scan-run history.
+- Any Finding can be promoted into a **Ticket** for tracking (`POST /tickets/from-finding/{finding_id}`), or a ticket can be filed directly (`POST /tickets/`). Tickets move through open → investigating → resolved/dismissed and can be listed, inspected, and deleted.
+
+Because it's an in-process scheduler with no leader-election, it assumes a single API process (the Docker image runs uvicorn without `--workers`); a multi-replica deployment would need a scheduling owner.
+
+---
+
+### 8. NL-SQL Agent (TinyLLM)
+
+A locally-trained natural-language-to-Oracle-SQL model, bundled in this repo under `tinyllm/`, lets you ask plain-language questions against a connected EBS environment instead of writing SQL by hand.
+
+1. `POST /nl-sql/extract/{environment_id}` — extract the environment's live schema; `GET /nl-sql/schema/{environment_id}` inspects it.
+2. `POST /nl-sql/train/{environment_id}` — fine-tune the base checkpoint on that schema; `GET /nl-sql/train/{environment_id}/status` polls progress.
+3. `POST /nl-sql/query` — ask a question in plain language and get back generated SQL; `POST /nl-sql/execute` runs it read-only and returns rows.
+
+This is the one agent that needs extra setup outside Docker — see [Local Development](#local-development-without-docker) below for the `PYTHONPATH` and checkpoint/tokenizer path requirements.
+
+---
+
+### 9. HCM / Payroll Functional Agent
+
+A read-only functional advisor for Oracle EBS R12 HCM/Payroll, modelled on the Performance agent (SSE streaming, simulator fallback when no DB is configured).
+
+- `GET /hcm/inquiries` lists a catalog of fixed, parameterized SELECTs; `POST /hcm/inquiry` runs one (live via `python-oracledb` thin mode, or simulated) and streams back an AI interpretation with an HR/payroll functional lens.
+- `POST /hcm/ask` answers a free-text HCM/Payroll question, grounded against the RAG knowledge base.
+
+---
+
+### 10. RAG Knowledge Base
 
 A document store that feeds verified context into every chat query, using two-stage
 retrieval (embedding recall → cross-encoder reranking) with a live web fallback.
@@ -146,7 +218,7 @@ retrieval (embedding recall → cross-encoder reranking) with a live web fallbac
 
 ---
 
-### 5. RLAIF Quality Auditor
+### 11. RLAIF Quality Auditor
 
 After every non-trivial AI response is saved, a background task sends the query, the retrieved RAG context, and the assistant's reply to a QA prompt asking the LLM to score the response on three axes: faithfulness (no hallucinations beyond the reference docs), correctness (accurate Oracle SQL and EBS commands), and helpfulness. The score (+1 / -1), the reasoning, and a suggested correction are stored on the message record. No action is taken automatically — this data is available for review and future training.
 
@@ -166,8 +238,15 @@ FastAPI  :8000
     ├── Deployments router — create / cancel / retry / migrate deployment runs
     ├── Deployment agent   — background task: extract steps, execute via DB or SSH
     ├── Performance agent  — diagnostic queries + AWR analysis
-    ├── Monitoring router  — live telemetry, RAG metrics, interaction audit trail (admin)
-    └── RLAIF service      — background QA audit per AI response
+    ├── Cloning agent       — guided Rapid Clone interview + runbook (non-prod only)
+    ├── Patching agent      — guided DB/Grid/RAC/adop patch interview + runbook (prod via maker-checker)
+    ├── Compare router      — patch parity / performance / config drift across two environments
+    ├── Monitoring (dba)    — scheduled delta-aware diagnostic scans + findings feed
+    ├── Tickets router      — findings promoted to trackable tickets
+    ├── NL-SQL agent        — TinyLLM natural-language → Oracle SQL (schema extract, fine-tune, query, execute)
+    ├── HCM agent           — read-only R12 HCM/Payroll inquiries + functional Q&A
+    ├── Monitoring (admin)  — live telemetry, RAG metrics, interaction audit trail
+    └── RLAIF service       — background QA audit per AI response
     │
     ├── PostgreSQL :5432   — users, sessions, chat history, RAG records, deployment runs, interaction logs
     ├── ChromaDB           — vector embeddings (embedded inside API container)
@@ -188,6 +267,49 @@ Verify Docker is running:
 ```bash
 docker info
 ```
+
+---
+
+## Hardware Requirements
+
+Sizing is driven almost entirely by which Ollama model you run locally — everything
+else in the stack (Postgres, Redis, ChromaDB, the API/frontend containers, the
+TinyLLM NL-SQL checkpoint at ~30 MB) adds only a couple GB on top. Pick the row
+that matches the local model you plan to run — or skip local inference
+entirely and use a cloud provider.
+
+| Tier | Example Ollama tag | Disk (model weights) | RAM (CPU-only inference) | GPU VRAM (optional, faster) | CPU |
+|------|--------------------|----------------------|--------------------------|------------------------------|-----|
+| Cloud-only (no local model) | — (OpenAI / Anthropic / Gemini via API key) | ~2 GB (containers only) | 4 GB | none | 2+ cores |
+| 1B — tiny / demo | `llama3.2:1b` | ~1.3 GB | 4–8 GB | 2 GB+ | 2–4 cores |
+| 7–8B — balanced (repo default) | `mistral:7b`, `llama3.1:8b` | ~4.5–5 GB | 8–16 GB | 6–8 GB | 4–8 cores |
+| 13–14B — better quality | `qwen2.5:14b`, `phi4:14b` | ~8–9 GB | 16–24 GB | 10–12 GB | 8+ cores |
+| 30B+ / 70B — max quality, heavy | `qwen2.5:32b`, `llama3.1:70b` | ~20–40 GB | 32–64 GB+ | 24 GB+ (often needs multiple GPUs or a smaller quant) | 12+ cores |
+
+**Notes:**
+
+- **RAM is the binding constraint**, not CPU — a model that doesn't fit in
+  RAM/VRAM will swap or fail to load rather than just run slowly. Add ~2 GB on
+  top of the table above for the rest of the stack (Postgres, Redis, ChromaDB,
+  API/frontend containers).
+- `OLLAMA_MAX_LOADED_MODELS` (default `2`) and `OLLAMA_NUM_PARALLEL` (default
+  `4`, shared across concurrent requests) in `docker-compose.yml` both multiply
+  the resident-model footprint above — lower them on a memory-constrained
+  machine, especially past the 7B tier.
+- **GPU is optional, not required** at any tier — every agent works CPU-only,
+  just slower per token; the "GPU VRAM" column is what you'd want if offloading
+  that tier to a GPU instead of CPU RAM. On Apple Silicon,
+  `docker-compose.override.yml` points the API at a natively-running Ollama so
+  it can use Metal instead of the CPU-only Ollama container; on Linux/Windows
+  with an NVIDIA GPU, run Ollama with
+  [the `nvidia` runtime](https://github.com/ollama/ollama/blob/main/docs/docker.md#nvidia-gpu) and point `OLLAMA_URL` at it.
+- The first RAG upload or query downloads two small models automatically
+  (`all-MiniLM-L6-v2` for embeddings, `ms-marco-MiniLM-L-6-v2` for reranking —
+  a few hundred MB combined, independent of which chat model you pick); no
+  action needed, just budget the disk space and a one-time download on first use.
+- Disk grows with usage beyond model weights: Postgres (chat/deployment
+  history), ChromaDB (RAG vector store), and however many Ollama models you
+  pull all persist in Docker volumes (`pgdata`, `chroma_data`, `ollama_data`).
 
 ---
 
@@ -229,10 +351,10 @@ docker compose down -v
 Ollama starts with no models. Pull the default the app expects:
 
 ```bash
-docker exec -it ollama ollama pull llama3.2:1b
+docker exec -it ollama ollama pull mistral:7b
 ```
 
-Any model from the [Ollama library](https://ollama.com/library) works. Pull additional models and switch between them from the UI's model manager. Larger models give better deployment step extraction and performance analysis — try `llama3` or `mistral` if you have enough RAM.
+Any model from the [Ollama library](https://ollama.com/library) works. Pull additional models and switch between them from the UI's model manager. On constrained hardware, pull `llama3.2:1b` instead and set `OLLAMA_DEFAULT_MODEL=llama3.2:1b`; larger models give better deployment step extraction and performance analysis if you have the RAM — see [Hardware Requirements](#hardware-requirements) above.
 
 ---
 
@@ -242,7 +364,7 @@ Any model from the [Ollama library](https://ollama.com/library) works. Pull addi
 2. Register an account (the first user you create is stored in PostgreSQL — no admin seeding needed)
 3. Log in
 4. (Optional) Upload reference documents to the knowledge base via the **RAG** panel
-5. Switch the active agent at the top of the UI to choose between Chat, Deployment, or Performance
+5. Switch the active agent at the top of the UI to choose between Chat, Deployment, Performance, Cloning, Patching, Compare, Monitoring, NL-SQL, or the HCM functional agent
 
 ---
 
@@ -251,9 +373,9 @@ Any model from the [Ollama library](https://ollama.com/library) works. Pull addi
 API keys are entered in the UI's model settings panel and sent as request headers (`X-LLM-Provider`, `X-LLM-Model`, `X-LLM-Api-Key`). Nothing is stored on the server.
 
 ```
-X-LLM-Provider: openai       # or: anthropic, ollama
+X-LLM-Provider: openai       # or: anthropic, gemini, ollama
 X-LLM-Model:    gpt-4o       # optional — overrides the default
-X-LLM-Api-Key:  sk-...       # required for openai / anthropic
+X-LLM-Api-Key:  sk-...       # required for openai / anthropic / gemini
 ```
 
 ---
@@ -330,8 +452,8 @@ NLSQL_DIR=/absolute/path/to/oraebsagent/nlsql_data
 NLSQL_BASE_CKPT=/absolute/path/to/oraebsagent/tinyllm/artifacts/model_best.pt
 NLSQL_BASE_TOK=/absolute/path/to/oraebsagent/tinyllm/artifacts/tokenizer.json
 ```
-Every other agent (Chat, Deployment, Patching, Performance, HCM, Monitoring,
-Compare) works natively without any extra configuration.
+Every other agent (Chat, Deployment, Cloning, Patching, Performance, HCM,
+Monitoring, Tickets, Compare) works natively without any extra configuration.
 
 ### Frontend
 
@@ -386,14 +508,26 @@ python -m scripts.create_admin <username>
 
 ## Database Migrations
 
-```bash
-# After editing api/app/models.py:
-alembic revision --autogenerate -m "describe your change"
-alembic upgrade head
+The schema source of truth is **`Base.metadata.create_all`**, called from
+`api/app/core/bootstrap.py` on API startup — not the Alembic chain in
+`api/alembic/`. `create_all` creates any missing tables; a separate additive-
+upgrade step in `bootstrap.py` handles column additions to *existing* tables.
+The Alembic migration chain is legacy and does not build cleanly from an empty
+database, so `alembic upgrade head` is not a reliable path here.
 
-# Roll back one step:
-alembic downgrade -1
+After editing a model, validate the change by running the test suite — the
+suite drops and recreates the schema from the current models every run, so a
+model change that doesn't work shows up as a test failure, not a migration
+error:
+
+```bash
+cd api
+PYTHONPATH=tests pytest
 ```
+
+Needs Postgres reachable and a `oraebsagent_test` database created once
+(`CREATE DATABASE oraebsagent_test;`) — see `api/tests/conftest.py` for the
+`TEST_DATABASE_URL` default.
 
 ---
 
@@ -422,6 +556,7 @@ oraebsagent/
 │       │   ├── smalltalk.py          # Instant greeting/small-talk intent classifier
 │       │   ├── crypto.py             # Fernet encryption for stored secrets
 │       │   ├── middleware.py         # Request telemetry middleware
+│       │   ├── scheduler.py          # In-process BackgroundScheduler for recurring diagnostic scans
 │       │   ├── auth/                 # auth.py (session auth, RBAC gates), sso.py
 │       │   ├── llm/                  # llm_service, model_router, semantic_cache, llm_cache, llm_guard_service
 │       │   ├── rag/                  # rag_service.py (ChromaDB + rerank + retrieval metrics)
@@ -435,15 +570,19 @@ oraebsagent/
 │       ├── modules/                  # Per-EBS-domain agents
 │       │   ├── dba/                  # Technical agents
 │       │   │   ├── deployment/       # deployments, deployment_agent, artifact_service
-│       │   │   ├── performance/      # performance_agent (diagnostics + AWR)
-│       │   │   ├── cloning/          # cloning, cloning_service
-│       │   │   └── patching/         # patching, patching_service, patch_exec (adop)
+│       │   │   ├── performance/      # performance_agent (diagnostics + AWR), monitoring (scheduled scans + findings)
+│       │   │   ├── cloning/          # cloning, cloning_service (non-prod only)
+│       │   │   ├── patching/         # patching, patching_service, patch_exec (adop), patch_gap, patch_file_gap
+│       │   │   ├── compare/          # compare, compare_service (patch / performance / config drift)
+│       │   │   ├── tickets/          # tickets, tickets_service (findings → trackable tickets)
+│       │   │   └── nl_sql/           # nl_sql, nl_sql_service (TinyLLM NL → Oracle SQL)
 │       │   └── functional/           # Functional agents
 │       │       └── hcm/              # hcm_agent, inquiries, db (R12 HCM/Payroll, read-only)
 │       ├── ml/                       # rl, rlaif_service (QA audit), training, training_service
 │       ├── models/                   # ORM package by domain (iam, chat, rag, dba, audit, settings, ml, infra)
 │       ├── schemas/                  # Pydantic package by domain
 │       └── common/                   # Shared utils
+├── tinyllm/                          # NL→SQL model: training, checkpoints, tokenizer (used by nl_sql module)
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -455,10 +594,12 @@ oraebsagent/
             ├── Auth.jsx              # Login / register
             ├── Chat/                 # Streaming chat UI + agent switcher
             ├── Admin/                # Admin Console (users, roles, prompts, routing, …)
-            ├── Monitoring/           # Monitoring Console (telemetry, quality, interaction audit)
+            ├── Monitoring/           # Monitoring Console (telemetry, quality, interaction audit; scheduled findings/tickets)
             ├── Deployment/           # Deployment panel + step log viewer
             ├── Performance/          # Diagnostics dashboard + AWR UI
-            ├── Cloning/  Patching/   # Cloning + ADOP patching centers
+            ├── Cloning/  Patching/   # Cloning + patching (DB/Grid/RAC/adop) centers
+            ├── Compare/              # Environment compare (patches / performance / config drift)
+            ├── NlSql/                # Natural-language → Oracle SQL agent UI
             ├── Functional/           # HCM/Payroll functional agent panel
             └── Rag/                  # Knowledge base manager
 ```
@@ -474,7 +615,7 @@ Change the host port in `docker-compose.yml` (e.g. `"5433:5432"` for Postgres) o
 The API waits for Postgres to pass its healthcheck. Run `docker compose logs postgres` to see if the DB is starting correctly.
 
 **Ollama returns "model not found"**
-Pull the model first: `docker exec -it ollama ollama pull llama3.2:1b`
+Pull the model first: `docker exec -it ollama ollama pull mistral:7b` (or whichever model `OLLAMA_DEFAULT_MODEL` / the UI's model manager is set to)
 
 **Deployment steps all fail in Direct DB mode**
 Check that `db_host`, `db_port`, `db_sid`, `db_user`, and `db_password` are all set when triggering the deployment. Without all five the agent logs `[DB] Cannot execute: DB credentials not configured`.
@@ -489,4 +630,4 @@ The frontend calls `http://localhost:8000`. Confirm the API container is running
 
 ## License
 
-This project is open source under the [MIT License](LICENSE).
+This project is proprietary software — see [LICENSE](LICENSE). All rights reserved; the contents of this repository, including the bundled TinyLLM NL→SQL component, may not be used, copied, or distributed without permission.
