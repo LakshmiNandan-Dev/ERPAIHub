@@ -223,8 +223,10 @@ _SIM_RUNNERS = {
 # ── Real Oracle query path ────────────────────────────────────────────────────
 # Mirrors app.core.safety.prod_guard.probe_target: per-sub-query try/except so a
 # missing grant on one view doesn't kill the whole area, tcp_connect_timeout=8.
-# concurrent_manager is intentionally absent — fnd_concurrent_% joins vary too
-# much by EBS version to hardcode safely in v1; stays simulation-only.
+# concurrent_manager's queries (cm_*) are best-effort against the standard R12
+# FND_CONCURRENT_REQUESTS shape — validate against your instance/EBS release
+# before relying on it, same "best-effort, hardcoded, not admin-editable"
+# status as every other query here.
 
 _REAL_SQL = {
     "wait_events": "SELECT event, total_waits, time_waited_micro, average_wait "
@@ -245,6 +247,44 @@ _REAL_SQL = {
                     "WHERE stale_stats='YES' AND owner='APPS' AND ROWNUM <= 20",
     "invalid_objs":"SELECT object_name, object_type, status FROM dba_objects "
                     "WHERE status='INVALID' AND owner='APPS' AND ROWNUM <= 30",
+    # Queue summary — current pending/running plus the last hour's completions.
+    "cm_queue":    "SELECT "
+                    "SUM(CASE WHEN phase_code = 'P' THEN 1 ELSE 0 END) AS pending, "
+                    "SUM(CASE WHEN phase_code = 'R' THEN 1 ELSE 0 END) AS running, "
+                    "SUM(CASE WHEN phase_code = 'C' AND status_code = 'C' "
+                    "    AND actual_completion_date > SYSDATE - 1/24 THEN 1 ELSE 0 END) AS completed_1h, "
+                    "SUM(CASE WHEN phase_code = 'C' AND status_code IN ('E','G') "
+                    "    AND actual_completion_date > SYSDATE - 1/24 THEN 1 ELSE 0 END) AS errored_1h "
+                    "FROM fnd_concurrent_requests "
+                    "WHERE phase_code IN ('P','R') OR actual_completion_date > SYSDATE - 1/24",
+    # Currently-running requests over 30 minutes, correlated to the Oracle
+    # session (and its current wait event) via the standard EBS technique:
+    # FND_CONCURRENT_REQUESTS.ORACLE_PROCESS_ID -> V$PROCESS.SPID -> V$SESSION.PADDR.
+    "cm_long_running":
+                    "SELECT fcr.request_id, fcp.user_concurrent_program_name AS program, "
+                    "fu.user_name AS requestor, "
+                    "ROUND((SYSDATE - fcr.actual_start_date) * 24 * 60) AS running_minutes, "
+                    "s.sid, s.serial# AS serial_num, s.event AS wait_event, "
+                    "s.wait_class, s.seconds_in_wait "
+                    "FROM fnd_concurrent_requests fcr "
+                    "JOIN fnd_concurrent_programs_vl fcp "
+                    "  ON fcr.concurrent_program_id = fcp.concurrent_program_id "
+                    " AND fcr.program_application_id = fcp.application_id "
+                    "LEFT JOIN fnd_user fu ON fcr.requested_by = fu.user_id "
+                    "LEFT JOIN v$process p ON TO_CHAR(p.spid) = fcr.oracle_process_id "
+                    "LEFT JOIN v$session s ON s.paddr = p.addr "
+                    "WHERE fcr.phase_code = 'R' AND fcr.actual_start_date IS NOT NULL "
+                    "AND (SYSDATE - fcr.actual_start_date) * 24 * 60 >= 30 "
+                    "ORDER BY running_minutes DESC FETCH FIRST 20 ROWS ONLY",
+    "cm_erroring": "SELECT fcp.user_concurrent_program_name AS program, COUNT(*) AS error_count_1h "
+                    "FROM fnd_concurrent_requests fcr "
+                    "JOIN fnd_concurrent_programs_vl fcp "
+                    "  ON fcr.concurrent_program_id = fcp.concurrent_program_id "
+                    " AND fcr.program_application_id = fcp.application_id "
+                    "WHERE fcr.phase_code = 'C' AND fcr.status_code IN ('E','G') "
+                    "AND fcr.actual_completion_date > SYSDATE - 1/24 "
+                    "GROUP BY fcp.user_concurrent_program_name "
+                    "ORDER BY error_count_1h DESC FETCH FIRST 10 ROWS ONLY",
 }
 
 _REAL_AREA_QUERIES = {
@@ -254,6 +294,7 @@ _REAL_AREA_QUERIES = {
     "locks": ["locks"],
     "tablespace": ["tablespace"],
     "statistics": ["stale_stats", "invalid_objs"],
+    "concurrent_manager": ["cm_queue", "cm_long_running", "cm_erroring"],
 }
 
 
@@ -342,6 +383,31 @@ def _real_area_query(cursor, area: str) -> dict | None:
                 {"object_name": r.get("object_name"), "object_type": r.get("object_type"),
                  "status": r.get("status")} for r in invalid_rows
             ]},
+        }
+    if area == "concurrent_manager":
+        queue_rows = parts.get("cm_queue") or []
+        q = queue_rows[0] if queue_rows else {}
+        lr_rows = parts.get("cm_long_running") or []
+        err_rows = parts.get("cm_erroring") or []
+        return {
+            "queue": {
+                "pending": q.get("pending") or 0, "running": q.get("running") or 0,
+                "completed_1h": q.get("completed_1h") or 0, "errored_1h": q.get("errored_1h") or 0,
+            },
+            "long_running_requests": [
+                {"request_id": r.get("request_id"), "program": r.get("program"),
+                 "requestor": r.get("requestor"), "running_minutes": r.get("running_minutes"),
+                 # Session identity + current wait — the "why is it stuck" detail.
+                 # sid/serial_num double as the ALTER SYSTEM KILL SESSION target.
+                 "sid": r.get("sid"), "serial_num": r.get("serial_num"),
+                 "wait_event": r.get("wait_event"), "wait_class": r.get("wait_class"),
+                 "seconds_in_wait": r.get("seconds_in_wait")}
+                for r in lr_rows
+            ],
+            "frequently_erroring": [
+                {"program": r.get("program"), "error_count_1h": r.get("error_count_1h")}
+                for r in err_rows
+            ],
         }
     return None
 

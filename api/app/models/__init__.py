@@ -15,7 +15,7 @@ from app.models.rag import RagDocument
 from app.models.infra import SshServer, EbsEnvironment
 from app.models.dba import (
     DeploymentRun, DeploymentStep, CloneRun, PatchRun, PatchTarget, AppliedPatchSnapshot, PatchFileScanConfig,
-    PatchFileInventory,
+    PatchFileInventory, RcaRun,
 )
 from app.models.monitoring import MonitoringSchedule, DiagnosticRun, Finding
 from app.models.tickets import Ticket
@@ -39,7 +39,7 @@ __all__ = [
     "SshServer", "EbsEnvironment",
     # apps-DBA run records
     "DeploymentRun", "DeploymentStep", "CloneRun", "PatchRun", "PatchTarget", "AppliedPatchSnapshot",
-    "PatchFileScanConfig", "PatchFileInventory",
+    "PatchFileScanConfig", "PatchFileInventory", "RcaRun",
     # scheduled diagnostics / findings (shared by performance + patch-gap scans)
     "MonitoringSchedule", "DiagnosticRun", "Finding",
     # tickets

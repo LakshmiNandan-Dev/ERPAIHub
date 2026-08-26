@@ -77,6 +77,8 @@ GATED_AGENTS = {
     "hcm":         "HCM Functional Agent — read-only HR/Payroll inquiry & functional advice.",
     "nl_sql":      "NL→SQL Agent — ask questions in plain English, get proposed read-only Oracle SQL "
                    "(per-environment fine-tuning).",
+    "rca":         "Root Cause Analysis Agent — diagnose concurrent request / concurrent manager / "
+                   "WebLogic managed-server failures (read-only).",
 }
 
 

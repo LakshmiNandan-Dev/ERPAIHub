@@ -686,6 +686,27 @@ async def stream_message(
     _nlsql_confirmed = was_nlsql_proposal_pending and pending_sql and any(
         w in lower_content for w in _CONFIRM_WORDS)
 
+    # The env-pending marker alone would otherwise re-trigger this block on
+    # EVERY following message, forever — an unrelated reply ("explain it
+    # instead") still matched, and with zero environments registered nothing
+    # could ever resolve it, trapping the user in a repeating "which
+    # environment?" prompt with no escape. Only keep treating this as a
+    # still-pending slot-fill if the message actually resolves to a real
+    # registered environment; otherwise fall through to normal chat below —
+    # mirrors the proposal-pending state's existing escape hatch (a
+    # non-confirm reply there already doesn't force a loop either).
+    _env_pending_resolved = None
+    if was_nlsql_env_pending:
+        # User-authored text only — the assistant's own "which environment?"
+        # reply lists every registered environment's name as an option, so
+        # including it here would make ANY follow-up spuriously "resolve"
+        # just because the bot's own prompt happened to mention that name.
+        combined = lower_content + " " + " ".join(
+            h.content.lower() for h in history[:5] if h.role == "user")
+        _env_pending_resolved = next(
+            (e for e in db.query(models.EbsEnvironment).all() if e.name.lower() in combined), None)
+    was_nlsql_env_pending = was_nlsql_env_pending and _env_pending_resolved is not None
+
     if _nlsql_confirmed or is_data_question_intent or was_nlsql_env_pending:
         from app.core.auth.auth import effective_agents
         from app.core.audit import audit_service
@@ -719,16 +740,20 @@ async def stream_message(
         # Not confirming -> either a fresh question or continuing an env slot-fill.
         question = pending_question or message_data.content
         envs = db.query(models.EbsEnvironment).all()
-        combined = lower_content
-        if was_nlsql_env_pending:
-            combined += " " + " ".join(h.content.lower() for h in history[:4])
-        env = next((e for e in envs if e.name.lower() in combined), None)
+        env = _env_pending_resolved or next((e for e in envs if e.name.lower() in lower_content), None)
 
         if not env:
-            names = ", ".join(e.name for e in envs) or "none registered — ask an admin to add one"
+            if not envs:
+                # Don't use the _NLSQL_ENV_MARKER text here — with nothing
+                # registered this can never be resolved, so asking "which
+                # environment?" would just set up the same trap again next turn.
+                return _canned_reply_response(db, session_id,
+                    "🗣️ **NL-SQL Agent** — no environments are registered yet, so I can't run data "
+                    "questions against anything. Ask an administrator to add one in "
+                    "Admin Console → Environments, then ask again.")
             return _canned_reply_response(db, session_id,
                 f"🗣️ **NL-SQL Agent — which environment?**\n\n"
-                f"Which environment should I run this against? ({names})")
+                f"Which environment should I run this against? ({', '.join(e.name for e in envs)})")
 
         result = nl_sql_service.propose(db, env, question)
         detail_lines = ""

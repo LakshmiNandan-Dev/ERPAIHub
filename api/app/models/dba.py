@@ -183,6 +183,35 @@ class PatchFileScanConfig(Base):
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
 
 
+class RcaRun(Base):
+    """A Root Cause Analysis run — diagnoses one of three EBS failure classes
+    (concurrent_request, concurrent_manager, weblogic_managed_server) by
+    collecting evidence (FND tables, v$session, the alert log, WebLogic/CM
+    logs over SSH) and asking the LLM to write a structured incident report.
+
+    Strictly read-only — no guard_status/maker-checker columns, unlike
+    CloneRun/PatchRun, since RCA never executes a restart/kill/bounce
+    regardless of environment tier."""
+    __tablename__ = "rca_runs"
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    environment_id = Column(Integer, ForeignKey("ebs_environments.id", ondelete="SET NULL"), nullable=True)
+    environment_name = Column(String(50), nullable=True)   # snapshot of the target env name
+    issue_type = Column(String(30), nullable=False)         # concurrent_request | concurrent_manager | weblogic_managed_server
+    params = Column(JSONB, nullable=True)                   # request_id/manager_name/managed_server_name/domain_home/log_lines
+    diagnostics = Column(JSONB, nullable=True)              # raw per-sub-check payload
+    data_sources = Column(JSONB, nullable=True)             # {sub_check_key: "live"|"simulated"|"error"}
+    data_source = Column(String(20), nullable=False, server_default='simulated')  # overall: live|simulated|mixed
+    report_markdown = Column(Text, nullable=True)            # persisted AI narrative
+    status = Column(String(20), nullable=False, server_default='running')  # running|completed|failed
+    error = Column(Text, nullable=True)
+    created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text('now()'))
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id], backref="rca_runs")
+
+
 class PatchFileInventory(Base):
     """Upsert-latest inventory of every file the file-version scan sees —
     filesystem version AND AD_FILES/AD_FILE_VERSIONS-registered version for

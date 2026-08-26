@@ -540,9 +540,25 @@ export default function PerformanceAgent({ onClose }) {
         <span className={data.queue?.errored_1h > 10 ? 'highlight-red' : data.queue?.errored_1h > 3 ? 'highlight-yellow' : ''}>{data.queue?.errored_1h}</span>
       </div>
       {(data.long_running_requests?.length || 0) > 0 && (
-        <div className="perf-stat-row" style={{ color: '#fbbf24', fontSize: '0.72rem' }}>
-          <span>Long-running (&gt;30min)</span><span>{data.long_running_requests.length}</span>
-        </div>
+        <>
+          <div className="perf-stat-row" style={{ color: '#fbbf24', fontSize: '0.72rem' }}>
+            <span>Long-running (&gt;30min)</span><span>{data.long_running_requests.length}</span>
+          </div>
+          <table className="perf-metric-table">
+            <thead><tr><th>Request</th><th>Program</th><th>Min</th><th>SID</th><th>Wait Event</th></tr></thead>
+            <tbody>
+              {data.long_running_requests.slice(0, 5).map((r, i) => (
+                <tr key={i}>
+                  <td>{r.request_id}</td>
+                  <td title={r.program}>{(r.program || '').slice(0, 22)}</td>
+                  <td className={r.running_minutes > 60 ? 'highlight-red' : 'highlight-yellow'}>{r.running_minutes}</td>
+                  <td title={r.sid != null ? `sid=${r.sid}, serial#=${r.serial_num}` : ''}>{r.sid ?? '—'}</td>
+                  <td title={r.wait_class}>{r.wait_event || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </>
   );

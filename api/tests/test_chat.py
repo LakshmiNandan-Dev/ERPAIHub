@@ -205,6 +205,36 @@ class TestChatNlSqlIntent:
         assert "nl-sql agent" not in text
         assert "which environment" not in text
 
+    def test_unrelated_followup_after_env_prompt_falls_through_to_normal_chat(self, client, admin_headers, mock_llm, mock_rag, nonprod_env):
+        """Regression: once the assistant asks 'which environment?', ANY
+        following message used to get trapped in the same prompt forever
+        (the marker alone re-triggered the block, with no relevance check).
+        An unrelated reply that names no environment and isn't itself a data
+        question must escape the loop and get normal chat instead."""
+        session_id = chat_session(client, admin_headers)
+        self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        r, text = self._post(client, session_id, "how to compare two ebs environments or instances?", admin_headers)
+        assert r.status_code == 200
+        assert "which environment" not in text
+        assert "nl-sql agent" not in text
+
+    def test_data_question_with_no_environments_registered_gives_clear_message_not_a_loop(self, client, admin_headers, mock_llm, mock_rag):
+        """No environments registered at all -> explain that plainly instead
+        of asking 'which environment?' (a question with no possible answer),
+        and the reply must not re-arm the pending-loop marker for next turn."""
+        session_id = chat_session(client, admin_headers)
+        r, text = self._post(client, session_id, "how many suppliers do we have", admin_headers)
+        assert r.status_code == 200
+        assert "no environments are registered" in text
+        assert "which environment" not in text
+
+        # Follow-up must not be trapped either, since the prior reply didn't
+        # carry the env-pending marker.
+        r2, text2 = self._post(client, session_id, "ok never mind, explain it instead", admin_headers)
+        assert r2.status_code == 200
+        assert "which environment" not in text2
+        assert "no environments are registered" not in text2
+
     def test_followup_naming_environment_proposes_sql(self, client, admin_headers, mock_llm, mock_rag, nonprod_env, monkeypatch):
         monkeypatch.setattr(nl_sql_service, "propose", _fake_propose)
         session_id = chat_session(client, admin_headers)
