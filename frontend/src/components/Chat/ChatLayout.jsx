@@ -12,6 +12,7 @@ import CloneCenter from '../Cloning/CloneCenter';
 import PatchCenter from '../Patching/PatchCenter';
 import NlSqlAgent from '../NlSql/NlSqlAgent';
 import HcmAgent from '../Functional/HcmAgent';
+import RcaAgent from '../Rca/RcaAgent';
 import ReactMarkdown from 'react-markdown';
 import {
   BrainCircuit, MessageSquarePlus, Trash2, Settings2, LogOut,
@@ -37,6 +38,7 @@ export default function ChatLayout({ setAuthToken }) {
   const [showPatching, setShowPatching] = useState(false);
   const [showNlSql, setShowNlSql] = useState(false);
   const [showHcm, setShowHcm] = useState(false);
+  const [showRca, setShowRca] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [showMonitoring, setShowMonitoring] = useState(false);
   const [showFindings, setShowFindings] = useState(false);
@@ -125,7 +127,7 @@ export default function ChatLayout({ setAuthToken }) {
   const role = String(user.role || (user.is_admin ? 'admin' : 'user')).toLowerCase();
   const allowedAgents = new Set(user.allowed_agents || []);
   // Maps an agent-dropdown value to its backend gated-agent name.
-  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching', hcm: 'hcm', nl_sql: 'nl_sql' };
+  const AGENT_OF = { deployments: 'deployment', performance: 'performance', cloning: 'cloning', patching: 'patching', hcm: 'hcm', nl_sql: 'nl_sql', rca: 'rca' };
   const canAgent = (name) => role === 'admin' || allowedAgents.has(name);
   const canInvokeAgents = role === 'admin' || allowedAgents.size > 0;
   const canAdminConsole = role === 'admin' || role === 'dba';
@@ -178,6 +180,8 @@ export default function ChatLayout({ setAuthToken }) {
       setShowHcm(true);
     } else if (val === 'nl_sql') {
       setShowNlSql(true);
+    } else if (val === 'rca') {
+      setShowRca(true);
     }
   };
 
@@ -566,6 +570,7 @@ export default function ChatLayout({ setAuthToken }) {
                 <option value="patching" disabled={!canAgent('patching')}>🩹 EBS Patching Agent{canAgent('patching') ? '' : ' 🔒'}</option>
                 <option value="hcm" disabled={!canAgent('hcm')}>🧑‍💼 HCM &amp; Payroll Agent{canAgent('hcm') ? '' : ' 🔒'}</option>
                 <option value="nl_sql" disabled={!canAgent('nl_sql')}>🗣️ Ask Your Data{canAgent('nl_sql') ? '' : ' 🔒'}</option>
+                <option value="rca" disabled={!canAgent('rca')}>🩺 Root Cause Analysis Agent{canAgent('rca') ? '' : ' 🔒'}</option>
                 <option value="finance" disabled>💸 Cash Management Agent (Soon)</option>
                 <option value="purchasing" disabled>🛒 Purchasing PO Agent (Soon)</option>
               </select>
@@ -892,6 +897,9 @@ export default function ChatLayout({ setAuthToken }) {
       )}
       {showNlSql && (
         <NlSqlAgent onClose={() => { setShowNlSql(false); setActiveAgent('diagnostic'); }} />
+      )}
+      {showRca && (
+        <RcaAgent onClose={() => { setShowRca(false); setActiveAgent('diagnostic'); }} />
       )}
       {showAdmin && <AdminConsole onClose={() => setShowAdmin(false)} role={role} currentUser={user} />}
       {showMonitoring && <MonitoringConsole onClose={() => setShowMonitoring(false)} />}

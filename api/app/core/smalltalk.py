@@ -15,7 +15,7 @@ import os
 
 SMALLTALK_ENABLED = os.getenv("SMALLTALK_ENABLED", "1").lower() not in ("0", "false", "no")
 SMALLTALK_THRESHOLD = float(os.getenv("SMALLTALK_THRESHOLD", "0.72"))
-SMALLTALK_MAX_WORDS = int(os.getenv("SMALLTALK_MAX_WORDS", "6"))
+SMALLTALK_MAX_WORDS = int(os.getenv("SMALLTALK_MAX_WORDS", "10"))
 
 INTENTS = {
     "greeting": {
@@ -44,15 +44,22 @@ INTENTS = {
     },
     "capabilities": {
         "examples": ["what can you do", "help", "who are you", "what do you do",
-                     "how can you help", "what are your capabilities"],
+                     "how can you help", "what are your capabilities",
+                     "is there an agent for cloning", "do you have a cloning agent",
+                     "is there an agent for patching", "what agents are available",
+                     "list of agents", "which agents do you have",
+                     "any agent for that", "is there a tool for this"],
         "response": (
-            "I'm an Oracle EBS assistant. I can:\n"
-            "- Answer EBS questions grounded in your uploaded knowledge base (RAG)\n"
-            "- Turn instructions into deployment steps (SQL / FNDLOAD / Forms / Workflow)\n"
-            "- Run database performance diagnostics + AWR analysis\n"
-            "- Guide ADOP patching and environment cloning\n"
-            "- Answer HCM / Payroll functional questions (read-only)\n\n"
-            "Ask me anything EBS-related, or pick a specialized agent from the dropdown."
+            "Yes — this AI Agent Hub ships several specialized agents, pick one from the "
+            "\"Active Agent\" dropdown:\n"
+            "- 🧬 **EBS Cloning Agent** — guided Rapid Clone (DB + app tier), produces a runbook\n"
+            "- 🩹 **EBS Patching Agent** — guided patching (OPatch/opatchauto + adop), produces a runbook\n"
+            "- 🚀 **Code Deployment Agent** — turns instructions into deployment steps and runs them over SSH\n"
+            "- ⚡ **Performance Analyzer** — live diagnostics, AWR analysis, comparisons\n"
+            "- 🧑‍💼 **HCM & Payroll Agent** — read-only HR/Payroll functional Q&A\n"
+            "- 🗣️ **Ask Your Data** — natural-language questions over EBS data (NL→SQL)\n"
+            "- 📚 **RAG Knowledge Base Agent** — Q&A grounded in your uploaded EBS docs (that's me, right here)\n\n"
+            "Switch the dropdown to the one you need, or just tell me what you're trying to do."
         ),
     },
 }

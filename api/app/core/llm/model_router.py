@@ -29,7 +29,7 @@ ROUTING_ENABLED = os.getenv("LLM_ROUTING_ENABLED", "1").lower() not in ("0", "fa
 # Complexity score at/above which a task is routed to the large model.
 LARGE_THRESHOLD = int(os.getenv("LLM_ROUTING_LARGE_THRESHOLD", "2"))
 
-KNOWN_AGENTS = ["chat", "deployment", "performance", "cloning", "knowledge_base", "patching", "hcm"]
+KNOWN_AGENTS = ["chat", "deployment", "performance", "cloning", "knowledge_base", "patching", "hcm", "rca"]
 
 
 def _tier_default(provider: str, tier: str, fallback: str) -> str:
