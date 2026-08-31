@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.bootstrap import run_bootstrap
+from app.core.oracle_client import init_thick_mode_if_configured
 from app.core.middleware import TelemetryMiddleware
 from app.core.auth import auth, sso
 from app.core import scheduler as scheduler_module
@@ -26,6 +27,10 @@ from app.modules.dba.compare import compare
 from app.modules.dba.nl_sql import nl_sql
 from app.modules.dba.rca import rca_agent
 from app.modules.functional.hcm import hcm_agent
+
+# Must run before any oracledb.connect() call — python-oracledb can only be
+# switched to thick mode once, before the first connection is made.
+init_thick_mode_if_configured()
 
 # Provision the schema and seed first-run data (admin, default LLM provider).
 run_bootstrap()
