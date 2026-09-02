@@ -11,6 +11,4 @@ venv
 deploy/onnx
 
 # ship ONLY the served vendor base from artifacts/, not every checkpoint
-artifacts/*
-!artifacts/model_best.pt
-!artifacts/tokenizer.json
+
