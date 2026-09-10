@@ -111,7 +111,10 @@ async def call_ebs_tool(
     async with transport._connect() as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            res = await session.call_tool(name, arguments or {})
+            try:
+                res = await session.call_tool(name, arguments or {})
+            except Exception as exc:  # connector/DB failure, unknown tool, etc.
+                return {"ok": False, "tool": name, "error": str(exc).splitlines()[0] if str(exc) else type(exc).__name__}
             text = res.content[0].text if res.content else ""
             if res.is_error:
                 return {"ok": False, "tool": name, "error": text}

@@ -13,6 +13,8 @@ the two things the library needs from its host:
 
 from __future__ import annotations
 
+import os
+
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
@@ -30,10 +32,15 @@ from app.ebsmcp.policy import EntitlementFilter
 from app.ebsmcp.tools import ToolContext
 from app.models.infra import EbsEnvironment
 
-# EBS databases here run SEC_CASE_SENSITIVE_LOGON=FALSE (10g verifier), which
-# python-oracledb's thin mode rejects with DPY-3015 — so thick mode is on by
-# default for the embedded tools. Requires the Instant Client in the image.
-_THICK_MODE = True
+# Thick mode (python-oracledb + Oracle Instant Client) is needed only for EBS
+# accounts the server authenticates with the 10g verifier — i.e. instances
+# running SEC_CASE_SENSITIVE_LOGON=FALSE, which thin mode rejects with
+# DPY-3015. It requires the Instant Client to be present in OraEBSAgent's api
+# image (not there by default), so it is OPT-IN: set EBS_ORACLE_THICK_MODE=true
+# only once the client is installed and the target instance actually needs it.
+# Default false = thin mode, which needs no client and works for
+# modern-verifier accounts.
+_THICK_MODE = os.getenv("EBS_ORACLE_THICK_MODE", "false").lower() in ("1", "true", "yes")
 
 
 def bind_ebs_subject(user=Depends(get_current_user)) -> str:
@@ -84,8 +91,6 @@ def build_ebs_connectors(db: Session | None = None) -> dict[str, EBSConnector]:
         if own_session:
             db.close()
 
-
-import os
 
 # EBSMCP's identity_mappings.environment is the DEPLOY STAGE (dev/test/uat/
 # prod) — a DIFFERENT axis from which EBS database a call targets (that is
