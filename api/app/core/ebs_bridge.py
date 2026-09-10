@@ -24,6 +24,10 @@ from app.ebsmcp.connectors import (
     init_thick_mode_if_configured,
 )
 from app.ebsmcp.context import set_current_subject
+from app.ebsmcp.audit import AuditLogger
+from app.ebsmcp.identity import IdentityResolver, PostgresIdentityResolver
+from app.ebsmcp.policy import EntitlementFilter
+from app.ebsmcp.tools import ToolContext
 from app.models.infra import EbsEnvironment
 
 # EBS databases here run SEC_CASE_SENSITIVE_LOGON=FALSE (10g verifier), which
@@ -79,3 +83,47 @@ def build_ebs_connectors(db: Session | None = None) -> dict[str, EBSConnector]:
     finally:
         if own_session:
             db.close()
+
+
+import os
+
+# EBSMCP's identity_mappings.environment is the DEPLOY STAGE (dev/test/uat/
+# prod) — a DIFFERENT axis from which EBS database a call targets (that is
+# the instance / ebs_environments.name). OraEBSAgent is one embedded
+# deployment, so this is a single configured value; every identity mapping
+# must use it. Instance scope (below) is what restricts which EBS databases
+# a subject may reach.
+EBS_DEPLOY_ENVIRONMENT = os.getenv("EBS_DEPLOY_ENVIRONMENT", "prod")
+
+# OraEBSAgent's own database — the single Postgres that also holds the
+# identity_mappings tables (see migration b2c4f6a8d013).
+_IDENTITY_DB_URL = os.getenv("DATABASE_URL")
+
+
+def build_identity_resolver(environment: str = EBS_DEPLOY_ENVIRONMENT) -> IdentityResolver:
+    """Resolve subjects against the identity_mappings tables in OraEBSAgent's
+    own Postgres. Same physical DB as everything else; the resolver just
+    opens its own indexed reads on the request hot path.
+    """
+    return PostgresIdentityResolver(db_url=_IDENTITY_DB_URL, environment=environment)
+
+
+def build_tool_context(db: Session | None = None,
+                       environment: str = EBS_DEPLOY_ENVIRONMENT) -> ToolContext:
+    """Assemble the full EBSMCP request pipeline for OraEBSAgent to call tools
+    through: read-only connectors per EBS environment, the Postgres identity
+    resolver, the entitlement filter, and the (stdout) audit logger.
+
+    The caller's subject is supplied separately, per request, via
+    set_current_subject / bind_ebs_subject — not baked into this context.
+    dev_subject is only a last-resort fallback and should never be hit in a
+    real request, since bind_ebs_subject always sets a real subject.
+    """
+    return ToolContext(
+        connectors=build_ebs_connectors(db),
+        identity_resolver=build_identity_resolver(environment),
+        entitlement=EntitlementFilter(),
+        audit=AuditLogger(),
+        environment=environment,
+        dev_subject="unauthenticated@local",
+    )
