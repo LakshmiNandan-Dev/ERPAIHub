@@ -25,7 +25,6 @@ from app.modules.dba.patching import patch_file_gap
 from app.modules.dba.tickets import tickets
 from app.modules.dba.compare import compare
 from app.modules.dba.nl_sql import nl_sql
-from app.modules.dba.rca import rca_agent
 from app.modules.functional.hcm import hcm_agent
 
 # Must run before any oracledb.connect() call — python-oracledb can only be
@@ -81,7 +80,6 @@ app.include_router(patch_gap.router)
 app.include_router(patch_file_gap.router)
 app.include_router(compare.router)
 app.include_router(nl_sql.router)
-app.include_router(rca_agent.router)
 
 
 @app.get("/")
