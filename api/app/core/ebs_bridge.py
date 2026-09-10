@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 
 from fastapi import Depends
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session
 
 from app.core import crypto, database
@@ -105,12 +106,30 @@ EBS_DEPLOY_ENVIRONMENT = os.getenv("EBS_DEPLOY_ENVIRONMENT", "prod")
 _IDENTITY_DB_URL = os.getenv("DATABASE_URL")
 
 
+# One engine for the whole process, created on first use and shared by every
+# resolver after that. PostgresIdentityResolver would otherwise call
+# create_engine() in its constructor — and a context is built per chat turn, so
+# that is a fresh connection pool per request, none of them ever disposed,
+# until Postgres starts refusing connections. The resolver takes an engine
+# precisely so the host application can own its lifetime; this is that owner.
+_identity_engine: Engine | None = None
+
+
+def _get_identity_engine() -> Engine:
+    global _identity_engine
+    if _identity_engine is None:
+        _identity_engine = create_engine(_IDENTITY_DB_URL, pool_pre_ping=True)
+    return _identity_engine
+
+
 def build_identity_resolver(environment: str = EBS_DEPLOY_ENVIRONMENT) -> IdentityResolver:
     """Resolve subjects against the identity_mappings tables in OraEBSAgent's
     own Postgres. Same physical DB as everything else; the resolver just
-    opens its own indexed reads on the request hot path.
+    opens its own indexed reads on the request hot path, over the shared
+    engine above.
     """
-    return PostgresIdentityResolver(db_url=_IDENTITY_DB_URL, environment=environment)
+    return PostgresIdentityResolver(db_url=_IDENTITY_DB_URL, environment=environment,
+                                    engine=_get_identity_engine())
 
 
 def build_tool_context(db: Session | None = None,
