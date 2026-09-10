@@ -21,6 +21,9 @@ from app.models.monitoring import MonitoringSchedule, DiagnosticRun, Finding
 from app.models.tickets import Ticket
 from app.models.compare import EnvironmentConfigSnapshot
 from app.models.nl_sql import NlSqlSchemaSnapshot, NlSqlTrainingRun
+from app.models.ebs_identity import (
+    IdentityMapping, IdentityMappingOrgScope, IdentityMappingInstanceScope,
+)
 from app.models.audit import AuditLog, UsageEvent, InteractionLog
 from app.models.settings import (
     IntegrationCredential, SsoSettings, LlmCredential, AgentLlmPolicy, AgentPrompt, NlSqlChatSettings,
@@ -39,7 +42,8 @@ __all__ = [
     "SshServer", "EbsEnvironment",
     # apps-DBA run records
     "DeploymentRun", "DeploymentStep", "CloneRun", "PatchRun", "PatchTarget", "AppliedPatchSnapshot",
-    "PatchFileScanConfig", "PatchFileInventory", 
+    "PatchFileScanConfig", "PatchFileInventory",
+    "IdentityMapping", "IdentityMappingOrgScope", "IdentityMappingInstanceScope", 
     # scheduled diagnostics / findings (shared by performance + patch-gap scans)
     "MonitoringSchedule", "DiagnosticRun", "Finding",
     # tickets

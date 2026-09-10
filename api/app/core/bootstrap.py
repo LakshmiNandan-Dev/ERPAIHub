@@ -185,6 +185,9 @@ def ensure_schema_upgrades():
         # RAG retrieval signals per interaction (added 2026-06).
         "ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS retrieval_top_k INTEGER",
         "ALTER TABLE interaction_logs ADD COLUMN IF NOT EXISTS retrieval_score DOUBLE PRECISION",
+        # Read-only EBS credential for the embedded EBSMCP tools (added 2026-09).
+        "ALTER TABLE ebs_environments ADD COLUMN IF NOT EXISTS readonly_user VARCHAR(100)",
+        "ALTER TABLE ebs_environments ADD COLUMN IF NOT EXISTS readonly_password_enc TEXT",
     ]
     for stmt in statements:
         try:
