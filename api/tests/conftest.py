@@ -16,10 +16,29 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 
 # ── Env config — MUST be set before app modules are imported ──────────────────
-os.environ.setdefault(
-    "DATABASE_URL",
-    os.getenv("TEST_DATABASE_URL", "postgresql://aiuser:aipassword@localhost:5432/oraebsagent_test"),
+#
+# TEST_DATABASE_URL always wins, and it is FORCED, not defaulted. This used to
+# be setdefault() on DATABASE_URL, which is silently catastrophic anywhere
+# DATABASE_URL is already exported — running pytest inside the api container,
+# where compose sets it to the live database, left the suite pointed at that
+# database and setup_test_database() then dropped every table in it. A test run
+# must never be able to reach a real deployment's data.
+_TEST_DB_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql://aiuser:aipassword@localhost:5432/oraebsagent_test"
 )
+
+# Second line of defence: the suite drops and recreates every table, so refuse
+# outright to point at anything not visibly named as a test database. Being
+# unable to run beats destroying data that isn't ours.
+_db_name = _TEST_DB_URL.rsplit("/", 1)[-1].split("?")[0]
+if "test" not in _db_name.lower():
+    raise RuntimeError(
+        f"Refusing to run the test suite against database {_db_name!r}: this suite "
+        "drops and recreates every table. Point TEST_DATABASE_URL at a database "
+        "whose name contains 'test'."
+    )
+
+os.environ["DATABASE_URL"] = _TEST_DB_URL
 os.environ.setdefault("APP_SECRET_KEY", "test-secret-key-not-for-production")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
