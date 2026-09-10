@@ -14,49 +14,12 @@ from app.core.rag import rag_service
 # Initialize FastMCP Server
 mcp = FastMCP("Oracle EBS AI Agent Server")
 
-@mcp.tool()
-def ebs_query_database(sql_query: str) -> str:
-    """
-    Executes a read-only SQL query against the local Oracle EBS database representation.
-    Use this to query tables like users, agent runs, concurrent jobs, etc.
-    
-    Args:
-        sql_query: A standard SQL read-only SELECT statement.
-    """
-    query_upper = sql_query.upper().strip()
-    
-    # Restrict write operations for absolute safety
-    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "REPLACE", "GRANT", "REVOKE"]
-    if any(f in query_upper for f in forbidden):
-        return "ERROR: Writing or mutating database states is strictly prohibited on the MCP gateway."
-        
-    db = database.SessionLocal()
-    try:
-        res = db.execute(text(sql_query))
-        columns = res.keys()
-        rows = res.fetchall()
-        
-        if not rows:
-            return "Query executed successfully. 0 rows returned."
-            
-        # Format markdown-like table response
-        output = [" | ".join(columns)]
-        output.append("-" * (len(output[0]) + 4))
-        
-        # Capped to prevent token overflows
-        capped_rows = rows[:50]
-        for row in capped_rows:
-            output.append(" | ".join(str(val) if val is not None else "NULL" for val in row))
-            
-        if len(rows) > 50:
-            output.append(f"\n... (Truncated. Displaying 50 out of {len(rows)} total rows)")
-            
-        return "\n".join(output)
-    except Exception as e:
-        return f"SQL Error during execution: {str(e)}"
-    finally:
-        db.close()
-
+# ebs_query_database was removed in favour of the reviewed EBS tool catalog
+# (app.core.ebs_tool_selector -> app.ebsmcp.tools). It took arbitrary
+# model-authored SQL and ran it, guarded only by a substring scan for
+# mutating keywords — which stops a DELETE but does nothing about a SELECT
+# against a table or column the model invented. Every question it served is
+# now answered by a tool whose SQL was written and reviewed by hand.
 
 @mcp.tool()
 def ebs_inspect_table(table_name: str) -> str:

@@ -62,8 +62,17 @@ class TestRoleCrud:
         assert r.status_code == 409
 
     def test_gated_agents_catalog(self, client, admin_headers):
-        names = {a["name"] for a in client.get("/admin/agents", headers=admin_headers).json()}
-        assert names == {"deployment", "performance", "cloning", "patching"}
+        """The catalog the admin UI offers is exactly GATED_AGENTS.
+
+        Asserted against the source of truth rather than a copy of it: the
+        hardcoded list this replaced went stale twice (hcm, nl_sql) before
+        anyone noticed, and every gated agent added since has had to edit a
+        test that was only ever restating the registry.
+        """
+        from app.core.auth.auth import GATED_AGENTS
+        agents = client.get("/admin/agents", headers=admin_headers).json()
+        assert {a["name"] for a in agents} == set(GATED_AGENTS)
+        assert all(a["description"] for a in agents), "every gated agent needs a description"
 
     def test_roles_require_admin(self, client, admin_headers):
         """A non-admin user cannot manage roles."""
@@ -76,8 +85,9 @@ class TestRoleCrud:
 class TestAgentPermissions:
 
     def test_admin_has_all_agents(self, client, admin_headers):
+        from app.core.auth.auth import GATED_AGENTS
         me = client.get("/auth/getuser", headers=admin_headers).json()
-        assert sorted(me["allowed_agents"]) == ["cloning", "deployment", "patching", "performance"]
+        assert sorted(me["allowed_agents"]) == sorted(GATED_AGENTS)
 
     def test_user_without_role_has_no_agents(self, client, admin_headers):
         _, headers = _make_user(client, admin_headers)

@@ -77,6 +77,8 @@ GATED_AGENTS = {
     "hcm":         "HCM Functional Agent — read-only HR/Payroll inquiry & functional advice.",
     "nl_sql":      "NL→SQL Agent — ask questions in plain English, get proposed read-only Oracle SQL "
                    "(per-environment fine-tuning).",
+    "ebs_tools":   "EBS Tools Agent — answer live EBS questions by running reviewed diagnostic "
+                   "tools (no generated SQL). Scoped by the user's EBS identity mapping.",
 }
 
 

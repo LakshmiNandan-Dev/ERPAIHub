@@ -707,6 +707,50 @@ async def stream_message(
             (e for e in db.query(models.EbsEnvironment).all() if e.name.lower() in combined), None)
     was_nlsql_env_pending = was_nlsql_env_pending and _env_pending_resolved is not None
 
+    # 2.9a. EBS Tools — answer an operational EBS question by running a
+    # hand-reviewed diagnostic tool instead of composing SQL for it.
+    #
+    # Deliberately ahead of the NL->SQL block below. Where a tool covers the
+    # question its SQL was written and reviewed once, against a known schema;
+    # anything generated per-question is strictly weaker than that. So the
+    # order is: reviewed tool, else NL->SQL (still confirm-gated), else normal
+    # chat. Nothing is taken away — this only stops NL->SQL from being the
+    # first thing that sees a question a tool already answers exactly.
+    #
+    # The selector returns None whenever no tool fits, and the cheap lexical
+    # shortlist inside it means an unrelated turn never reaches an LLM call.
+    #
+    # Skipped while an NL->SQL turn is mid-flight: a bare "run it" or an
+    # environment name is answering the question below, not asking a new one.
+    if not is_simple_query and not (_nlsql_confirmed or was_nlsql_proposal_pending
+                                    or was_nlsql_env_pending):
+        from app.core.auth.auth import effective_agents as _effective_agents
+        if "ebs_tools" in _effective_agents(current_user):
+            try:
+                from app.core import ebs_tool_selector
+                from app.core.ebs_bridge import build_tool_context
+
+                _tool_answer = await ebs_tool_selector.answer_question(
+                    build_tool_context(db), current_user.email, message_data.content,
+                    llm=llm_service, provider=llm_provider, model=llm_model,
+                    api_key=llm_api_key, base_url=llm_base_url,
+                )
+            except Exception as _exc:
+                # A misconfigured bridge (no environments registered, EBS
+                # unreachable, missing driver) must not take chat down with
+                # it — log and fall through to the existing behaviour.
+                print(f"[EBSTools] selector unavailable: {_exc}")
+                _tool_answer = None
+
+            if _tool_answer is not None:
+                from app.core.audit import audit_service
+                audit_service.log("agent_invoke", agent="ebs_tools",
+                                  user_id=current_user.id, username=current_user.username,
+                                  detail={"tool": _tool_answer["tool"],
+                                          "arguments": _tool_answer["arguments"],
+                                          "ok": _tool_answer["ok"]})
+                return _canned_reply_response(db, session_id, _tool_answer["markdown"])
+
     if _nlsql_confirmed or is_data_question_intent or was_nlsql_env_pending:
         from app.core.auth.auth import effective_agents
         from app.core.audit import audit_service
