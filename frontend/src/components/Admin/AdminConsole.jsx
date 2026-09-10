@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '../../api';
 import './AdminConsole.css';
-import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare, Ticket, ShieldAlert, MessageCircleQuestion, FileSearch } from 'lucide-react';
+import { Users, Server, Globe, Cpu, Plus, Pencil, Trash2, X, ShieldCheck, LogIn, Link2, ClipboardList, Download, GraduationCap, Upload, Split, KeyRound, MessageSquare, Ticket, ShieldAlert, MessageCircleQuestion, FileSearch, UserCheck } from 'lucide-react';
 
 // `roles` lists which roles may see each tab. Admin sees everything; a DBA is
 // limited to the governance tabs (user approvals + audit / clone approvals).
@@ -11,6 +11,7 @@ const TABS = [
   { key: 'prompts',      label: 'Agent Prompts', icon: MessageSquare, roles: ['admin'] },
   { key: 'servers',      label: 'SSH Servers',   icon: Server,        roles: ['admin'] },
   { key: 'environments', label: 'Environments',  icon: Globe,         roles: ['admin'] },
+  { key: 'ebsaccess',    label: 'EBS Access',    icon: UserCheck,     roles: ['admin'] },
   { key: 'llm',          label: 'LLM Providers', icon: Cpu,           roles: ['admin'] },
   { key: 'routing',      label: 'Agent Routing', icon: Split,         roles: ['admin'] },
   { key: 'training',     label: 'Training',      icon: GraduationCap, roles: ['admin'] },
@@ -54,6 +55,7 @@ export default function AdminConsole({ onClose, role = 'admin', currentUser = {}
           {tab === 'prompts' && <PromptsTab />}
           {tab === 'servers' && <ServersTab />}
           {tab === 'environments' && <EnvironmentsTab />}
+          {tab === 'ebsaccess' && <EbsAccessTab />}
           {tab === 'llm' && <LlmTab />}
           {tab === 'routing' && <RoutingTab />}
           {tab === 'training' && <TrainingTab />}
@@ -2917,6 +2919,226 @@ function TrainingTab() {
 
 
 /* ── Form modal shell ───────────────────────────────────────────────────────── */
+
+// ── EBS Access ────────────────────────────────────────────────────────────────
+// Identity mappings: the grant that lets a chat user's question reach EBS at
+// all. Without an open mapping, every EBS tool call that user makes is denied
+// by name; with one, the persona decides which tools resolve and which
+// databases they reach. Creating one used to mean a hand-written INSERT.
+function EbsAccessTab() {
+  const { rows, error, loading, reload, setError } = useResource('/admin/identity-mappings');
+  const [options, setOptions] = useState(null);
+  const [form, setForm] = useState(null);
+  const [showClosed, setShowClosed] = useState(false);
+
+  useEffect(() => {
+    api.get('/admin/identity-mappings/options').then(r => setOptions(r.data)).catch(() => {});
+  }, []);
+
+  const persona = (key) => options?.personas?.[key] || {};
+  const blank = {
+    entra_subject: '', environment: options?.deploy_environment || 'prod',
+    target_system: 'ebs_dba', mapped_role: '', target_username: '', domain: '',
+    instance_scope_restricted: false, instance_scope: [], org_scope: '',
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    const p = persona(form.target_system);
+    const body = {
+      entra_subject: form.entra_subject,
+      environment: form.environment,
+      target_system: form.target_system,
+      mapped_role: form.mapped_role,
+      // The server rejects a username or domain on a persona that has no use
+      // for one, so send them only where they apply.
+      target_username: p.needs_username ? form.target_username : null,
+      domain: p.needs_domain ? form.domain : null,
+      instance_scope_restricted: form.instance_scope_restricted,
+      instance_scope: form.instance_scope_restricted ? form.instance_scope : [],
+      org_scope: p.supports_org_scope
+        ? form.org_scope.split(',').map(o => o.trim()).filter(Boolean) : [],
+    };
+    try {
+      await api.post('/admin/identity-mappings', body);
+      setForm(null); reload();
+    } catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const close = async (row) => {
+    const reason = window.prompt(
+      `Revoke EBS access for ${row.entra_subject}?\n\n` +
+      'The mapping is kept with an end date, so the record of this grant survives. ' +
+      'Optionally note why:');
+    if (reason === null) return;
+    try { await api.post(`/admin/identity-mappings/${row.id}/close`, { reason: reason || null }); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const remove = async (row) => {
+    if (!window.confirm(
+      `Permanently DELETE the mapping for ${row.entra_subject}?\n\n` +
+      'This erases the history of the grant too. To revoke access while keeping ' +
+      'that record, use Revoke instead.')) return;
+    try { await api.delete(`/admin/identity-mappings/${row.id}`); reload(); }
+    catch (err) { setError(err.response?.data?.detail || err.message); }
+  };
+
+  const visible = showClosed ? rows : rows.filter(r => !r.effective_end_date);
+  const stageMismatch = (r) => options && r.environment !== options.deploy_environment;
+
+  return (
+    <div>
+      <div className="admin-toolbar">
+        <h4>EBS Access {loading && <span className="admin-muted">· loading…</span>}</h4>
+        <button className="admin-btn-primary" onClick={() => setForm({ ...blank })}>
+          <Plus size={14} /> Grant EBS Access
+        </button>
+      </div>
+      {error && <p className="admin-error">{error}</p>}
+
+      <p className="admin-muted">
+        Who a chat user becomes inside EBS. Without an open mapping here, that user&apos;s
+        EBS questions are refused by name rather than answered.
+        {options && <> This deployment serves stage <strong>{options.deploy_environment}</strong>;
+        a mapping on any other stage never resolves at runtime.</>}
+      </p>
+
+      <label className="admin-muted" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', margin: '0 0 0.6rem' }}>
+        <input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} />
+        Show revoked mappings
+      </label>
+
+      <table className="admin-table">
+        <thead><tr>
+          <th>User</th><th>Persona</th><th>Role</th><th>EBS User</th>
+          <th>Stage</th><th>Instances</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody>
+          {visible.map(r => (
+            <tr key={r.id} style={r.effective_end_date ? { opacity: 0.55 } : undefined}>
+              <td>{r.entra_subject}</td>
+              <td>{persona(r.target_system).label || r.target_system}</td>
+              <td>{r.mapped_role}</td>
+              <td>{r.target_username || <span className="admin-muted">n/a</span>}
+                {r.domain && <span className="admin-muted"> · {r.domain}</span>}</td>
+              <td>
+                {r.environment}
+                {stageMismatch(r) && (
+                  <span className="admin-pill off" style={{ marginLeft: 6 }}
+                        title={`This deployment resolves mappings on '${options.deploy_environment}' only — this one will never match.`}>
+                    inactive stage
+                  </span>
+                )}
+              </td>
+              <td>{r.instance_scope_restricted
+                ? (r.instance_scope.join(', ') || <span className="admin-muted">none</span>)
+                : <span className="admin-muted">all</span>}</td>
+              <td>{r.effective_end_date
+                ? <span className="admin-pill off">revoked</span>
+                : <span className="admin-pill ok">active</span>}</td>
+              <td className="admin-actions">
+                {!r.effective_end_date && (
+                  <button onClick={() => close(r)} title="Revoke access, keeping the record">Revoke</button>
+                )}
+                <button onClick={() => remove(r)} title="Delete permanently (created in error)"><Trash2 size={14} /></button>
+              </td>
+            </tr>
+          ))}
+          {visible.length === 0 && !loading && (
+            <tr><td colSpan={8} className="admin-muted">
+              No {showClosed ? '' : 'active '}mappings — nobody can reach EBS through the agent yet.
+            </td></tr>
+          )}
+        </tbody>
+      </table>
+
+      {form && options && (
+        <FormModal title="Grant EBS Access" onClose={() => setForm(null)} onSubmit={save}>
+          <div className="admin-row">
+            <Field label="User email (their sign-in address)">
+              <input type="email" value={form.entra_subject} required autoFocus
+                     onChange={e => setForm({ ...form, entra_subject: e.target.value })} />
+            </Field>
+            <Field label="Stage">
+              <select value={form.environment} onChange={e => setForm({ ...form, environment: e.target.value })}>
+                {options.environments.map(v => (
+                  <option key={v} value={v}>{v}{v === options.deploy_environment ? ' (this deployment)' : ''}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <div className="admin-row">
+            <Field label="Persona">
+              <select value={form.target_system}
+                      onChange={e => setForm({ ...form, target_system: e.target.value })}>
+                {options.target_systems.map(v => (
+                  <option key={v} value={v}>{persona(v).label || v}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Role name (shown on every answer)">
+              <input value={form.mapped_role} required placeholder="e.g. Senior DBA"
+                     onChange={e => setForm({ ...form, mapped_role: e.target.value })} />
+            </Field>
+          </div>
+
+          <p className="admin-muted" style={{ marginTop: '-0.2rem' }}>
+            {persona(form.target_system).summary} {persona(form.target_system).note}
+          </p>
+
+          {persona(form.target_system).needs_username && (
+            <div className="admin-row">
+              <Field label="EBS username (FND_USER)">
+                <input value={form.target_username} required
+                       onChange={e => setForm({ ...form, target_username: e.target.value })} />
+              </Field>
+              <Field label="Functional domain">
+                <input value={form.domain} required placeholder="e.g. finance, scm"
+                       onChange={e => setForm({ ...form, domain: e.target.value })} />
+              </Field>
+            </div>
+          )}
+
+          <Field label="Instance access">
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem' }}>
+              <input type="checkbox" checked={form.instance_scope_restricted}
+                     onChange={e => setForm({ ...form, instance_scope_restricted: e.target.checked })} />
+              Limit to specific instances
+            </label>
+          </Field>
+          {form.instance_scope_restricted && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.7rem', margin: '0.2rem 0 0.6rem' }}>
+              {options.instances.length === 0 && (
+                <span className="admin-muted">No environments registered yet.</span>
+              )}
+              {options.instances.map(name => (
+                <label key={name} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.82rem' }}>
+                  <input type="checkbox" checked={form.instance_scope.includes(name)}
+                         onChange={e => setForm({
+                           ...form,
+                           instance_scope: e.target.checked
+                             ? [...form.instance_scope, name]
+                             : form.instance_scope.filter(i => i !== name),
+                         })} />
+                  {name}
+                </label>
+              ))}
+            </div>
+          )}
+
+          {persona(form.target_system).supports_org_scope && (
+            <Field label="Org IDs (comma-separated; blank = every Org this user already has)">
+              <input value={form.org_scope} placeholder="e.g. 204, 301"
+                     onChange={e => setForm({ ...form, org_scope: e.target.value })} />
+            </Field>
+          )}
+        </FormModal>
+      )}
+    </div>
+  );
+}
 
 function FormModal({ title, onClose, onSubmit, children }) {
   return (

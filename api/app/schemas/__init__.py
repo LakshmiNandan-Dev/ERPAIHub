@@ -106,6 +106,12 @@ from app.schemas.patching import (
     PatchFileInventoryOut,
     PatchFileInventoryPage,
 )
+from app.schemas.ebs_identity import (
+    IdentityMappingCreate,
+    IdentityMappingClose,
+    IdentityMappingOut,
+    IdentityMappingOptions,
+)
 
 __all__ = [
     # auth
@@ -145,4 +151,7 @@ __all__ = [
     "PatchTargetCreate", "PatchTargetUpdate", "PatchTargetOut",
     "PatchFileScanConfigCreate", "PatchFileScanConfigUpdate", "PatchFileScanConfigOut",
     "PatchFileInventoryOut", "PatchFileInventoryPage",
+    # EBS identity mappings (who a chat user becomes inside EBS)
+    "IdentityMappingCreate", "IdentityMappingClose",
+    "IdentityMappingOut", "IdentityMappingOptions",
 ]

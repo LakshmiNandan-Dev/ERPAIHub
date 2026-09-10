@@ -14,6 +14,7 @@ from app.core.middleware import TelemetryMiddleware
 from app.core.auth import auth, sso
 from app.core import scheduler as scheduler_module
 from app.platform_api import chat, rag, admin, config, monitoring, audit
+from app.platform_api import ebs_identity_admin
 from app.ml import rl, training
 from app.modules.dba.deployment import deployments, deployment_agent
 from app.modules.dba.performance import performance_agent
@@ -78,6 +79,7 @@ app.include_router(diagnostics_monitoring.router)
 app.include_router(tickets.router)
 app.include_router(patch_gap.router)
 app.include_router(patch_file_gap.router)
+app.include_router(ebs_identity_admin.router)
 app.include_router(compare.router)
 app.include_router(nl_sql.router)
 
