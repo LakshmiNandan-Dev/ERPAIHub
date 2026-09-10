@@ -258,6 +258,17 @@ _HCM_INQUIRY_SUMMARIZE = (
     "Keep it concise and structured."
 )
 
+_NL_SQL_INTERPRET = (
+    "You are interpreting the results of an auto-generated, READ-ONLY SQL query that answered a "
+    "user's plain-English data question against an Oracle E-Business Suite database. Given the "
+    "original question, the generated SQL, and the returned rows (JSON):\n"
+    "- Answer the question directly and plainly using only the rows shown.\n"
+    "- Mention the row count and, if it's zero, say so and suggest why rather than guessing at numbers.\n"
+    "- Do not invent rows, columns, or values not present in the data.\n"
+    "Keep the answer concise."
+)
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────────
 # Order here is the display order in the admin UI.
 _DEFINITIONS = [

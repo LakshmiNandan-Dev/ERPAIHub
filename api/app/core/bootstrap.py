@@ -167,10 +167,12 @@ def seed_rbac_defaults():
 
 def ensure_schema_upgrades():
     """
-    Apply additive column upgrades that create_all can't make to *existing*
-    tables (create_all only creates missing tables, never alters present ones).
-    Each statement is idempotent (ADD COLUMN IF NOT EXISTS) and best-effort so a
-    failure here never blocks startup.
+    Apply the schema changes create_all can't make to *existing* tables
+    (create_all only creates missing tables — it never alters or drops one
+    that is already there). Mostly additive columns, plus the occasional drop
+    of a table left behind by a removed feature. Each statement is idempotent
+    (IF NOT EXISTS / IF EXISTS) and best-effort so a failure here never blocks
+    startup.
     """
     statements = [
         # Dedup support: hash of the uploaded bytes (added 2026-06).
@@ -188,6 +190,11 @@ def ensure_schema_upgrades():
         # Read-only EBS credential for the embedded EBSMCP tools (added 2026-09).
         "ALTER TABLE ebs_environments ADD COLUMN IF NOT EXISTS readonly_user VARCHAR(100)",
         "ALTER TABLE ebs_environments ADD COLUMN IF NOT EXISTS readonly_password_enc TEXT",
+        # RCA agent removed (2026-09). Its model is gone, so create_all no
+        # longer knows about the table — but the table itself survives in
+        # every database created before the removal, and its foreign key onto
+        # ebs_environments keeps pinning a row set nothing reads any more.
+        "DROP TABLE IF EXISTS rca_runs",
     ]
     for stmt in statements:
         try:
