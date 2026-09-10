@@ -3,7 +3,7 @@ genuinely solid ground (DBA_EDITIONS is a core Oracle 11.2+ Edition-Based
 Redefinition dictionary view, not EBS-specific at all). patch_history
 extends the original recent_applied_patches tool.
 
-adop_session_status (APPLSYS.AD_ADOP_SESSIONS) was added later, once a
+adop_session_status (APPS.AD_ADOP_SESSIONS) was added later, once a
 live instance was available to verify its column structure and STATUS
 code semantics directly rather than guessing — see the tool's own
 docstring. This covers session-level status/phase tracking only.
@@ -17,12 +17,12 @@ patch registry, distinct in scope from patch_history's EBS-application-
 layer coverage. HIGH confidence, standard core Oracle view, columns
 verified against a live instance (2026-09-02).
 
-Confidence note on applied_patches (patch_history): AD.AD_APPLIED_PATCHES
-was written from memory, not verified — and the same live-instance check
-that found AD_ADOP_SESSIONS actually lives under APPLSYS (not AD; this
-instance has no AD schema at all) casts real doubt on the AD. qualifier
-here too. Flagged, not yet fixed — a separate check, since it's a
-different table.
+applied_patches (patch_history) was written from memory against an AD.
+qualifier, and the doubt flagged here was justified. Verified live
+(2026-09-10): there is no AD schema on this instance at all, so both
+AD.AD_APPLIED_PATCHES and AD.AD_BUGS raised ORA-00942 and the tool could
+never have returned a row. Both now read through APPS — 4,759 applied
+patches, 591,290 bugs.
 """
 
 from __future__ import annotations
@@ -37,10 +37,17 @@ from app.ebsmcp.tools.registry import ToolContext, ToolSet, resolve_scoped_call
 PatchHistoryView = Literal["applied_patches", "product_versions"]
 
 _PATCH_HISTORY_QUERIES: dict[PatchHistoryView, str] = {
+    # Columns verified against a live instance (2026-09-10) after the join
+    # this replaced turned out to be doubly wrong: AD_APPLIED_PATCHES has
+    # neither BUG_ID nor STATUS (ORA-00904), so the join to AD_BUGS could not
+    # have run. It is also unnecessary — PATCH_NAME already holds the patch
+    # number a DBA asks about ("36839803"), and joining AD_BUGS would fan each
+    # patch out across every bug it delivers, the same defect just fixed in
+    # concurrent_requests.
     "applied_patches": (
-        "SELECT aap.applied_patch_id, ab.bug_number AS patch_number, aap.creation_date, aap.status "
-        "FROM AD.AD_APPLIED_PATCHES aap "
-        "JOIN AD.AD_BUGS ab ON ab.bug_id = aap.bug_id "
+        "SELECT aap.applied_patch_id, aap.patch_name AS patch_number, aap.patch_type, "
+        "aap.maint_pack_level, aap.creation_date "
+        "FROM APPS.AD_APPLIED_PATCHES aap "
         "ORDER BY aap.creation_date DESC "
         "FETCH FIRST 25 ROWS ONLY"
     ),
@@ -50,8 +57,8 @@ _PATCH_HISTORY_QUERIES: dict[PatchHistoryView, str] = {
     "product_versions": (
         "SELECT fpi.application_id, fa.application_short_name, fpi.status, "
         "fpi.patch_level, fpi.product_version "
-        "FROM APPLSYS.FND_PRODUCT_INSTALLATIONS fpi "
-        "JOIN APPLSYS.FND_APPLICATION fa ON fa.application_id = fpi.application_id "
+        "FROM APPS.FND_PRODUCT_INSTALLATIONS fpi "
+        "JOIN APPS.FND_APPLICATION fa ON fa.application_id = fpi.application_id "
         "ORDER BY fa.application_short_name"
     ),
 }
@@ -74,7 +81,7 @@ _ADOP_PHASE_COLUMNS = (
 
 def build_adop_session_query(session_id: int | None) -> tuple[str, dict[str, Any]]:
     """Columns verified against a live instance (2026-09-02): the table
-    is APPLSYS.AD_ADOP_SESSIONS, not AD.AD_ADOP_SESSIONS — this instance
+    is APPS.AD_ADOP_SESSIONS, not AD.AD_ADOP_SESSIONS — this instance
     has no AD schema at all (0 tables owned by AD in ALL_TABLES); a
     synonym check confirmed the real owner is APPLSYS. SESSION_INPUT_DATA
     (a CLOB of session XML) is deliberately excluded — internal/verbose,
@@ -98,7 +105,7 @@ def build_adop_session_query(session_id: int | None) -> tuple[str, dict[str, Any
         "appltop_id, prepare_start_date, prepare_end_date, apply_start_date, apply_end_date, "
         "finalize_start_date, finalize_end_date, cutover_start_date, cutover_end_date, "
         "cleanup_start_date, cleanup_end_date, abort_start_date, abort_end_date "
-        "FROM APPLSYS.AD_ADOP_SESSIONS "
+        "FROM APPS.AD_ADOP_SESSIONS "
         f"{where}"
         "ORDER BY adop_session_id DESC "
         f"{limit}"

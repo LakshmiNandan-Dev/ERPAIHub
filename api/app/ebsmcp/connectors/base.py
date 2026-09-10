@@ -1,10 +1,23 @@
 """EBS connector interface, plus the two standing SQL conventions agreed on
 for every tool that queries EBS: GV$ instead of V$ (portable across
 single-instance and RAC without conditional logic), and every real
-product-schema object (APPLSYS., AD., etc.) fully schema-qualified (no
-dependency on the calling account's CURRENT_SCHEMA — onboarding a new
-client's read-only account reduces to "grant SELECT on this exact list of
-fully-qualified objects").
+product-schema object qualified as APPS.OBJECT (no dependency on the
+calling account's CURRENT_SCHEMA — onboarding a new client's read-only
+account reduces to "grant SELECT on this exact list of fully-qualified
+objects").
+
+Revision (2026-09-10): that qualifier is APPS, not the owning schema.
+Tools were originally written against APPLSYS. and AD., which is wrong on
+two counts, both found live. On R12.2 with Online Patching, the APPLSYS
+base tables hold a row per edition, so APPLSYS.FND_CONCURRENT_PROGRAMS_TL
+returned every program twice (53,214 rows against APPS's 26,630) and every
+tool joining it silently double-counted; the APPS editioning views resolve
+to the running edition and return each row once. And several objects are
+not in the schema they appear to belong to at all — APPLSYS.
+FND_USER_RESP_GROUPS and AD.AD_APPLIED_PATCHES both raise ORA-00942 on a
+stock instance, so those tools could never return a row. APPS is the
+access path Oracle documents for application code, is uniform across every
+product schema, and is a single grant target for a read-only account.
 
 Revision (2026-09-02): SYS.-qualification of catalog/dynamic-performance
 objects (SYS.DBA_*, SYS.GV$*) was dropped after live testing on a real EBS
@@ -76,7 +89,7 @@ def validate_sql_conventions(sql: str) -> None:
         if "." not in target:
             violations.append(
                 f"unqualified object {target!r} — every FROM/JOIN target must be "
-                "SCHEMA.OBJECT, e.g. APPLSYS.FND_CONCURRENT_REQUESTS (GV$*/DBA_* "
+                "SCHEMA.OBJECT, e.g. APPS.FND_CONCURRENT_REQUESTS (GV$*/DBA_* "
                 "catalog views are exempt — see module docstring)."
             )
 
