@@ -1,0 +1,81 @@
+"""Glue between OraEBSAgent and the embedded EBSMCP library (app.ebsmcp).
+
+This module is OraEBSAgent's own code — NOT part of the vendored package —
+so app.ebsmcp stays a clean, re-vendorable copy of upstream. It supplies
+the two things the library needs from its host:
+
+  1. WHO is calling — bind_ebs_subject() asserts the authenticated user's
+     email as the EBSMCP subject, per request (the authentication seam).
+  2. WHICH databases it may reach — build_ebs_connectors() reads the
+     canonical ebs_environments registry and builds one read-only Oracle
+     connector per environment, replacing EBSMCP's own env-var config.
+"""
+
+from __future__ import annotations
+
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
+from app.core import crypto, database
+from app.core.auth.auth import get_current_user
+from app.ebsmcp.connectors import (
+    EBSConnector,
+    OracleEBSConnector,
+    init_thick_mode_if_configured,
+)
+from app.ebsmcp.context import set_current_subject
+from app.models.infra import EbsEnvironment
+
+# EBS databases here run SEC_CASE_SENSITIVE_LOGON=FALSE (10g verifier), which
+# python-oracledb's thin mode rejects with DPY-3015 — so thick mode is on by
+# default for the embedded tools. Requires the Instant Client in the image.
+_THICK_MODE = True
+
+
+def bind_ebs_subject(user=Depends(get_current_user)) -> str:
+    """FastAPI dependency: assert the authenticated user as the EBSMCP subject.
+
+    Chain it AFTER authentication on any route that calls EBSMCP tools:
+
+        @router.post("/ask", dependencies=[Depends(bind_ebs_subject)])
+
+    `email` is the join key into EBSMCP's identity_mappings and the audit
+    subject — the same identity OraEBSAgent already authenticated.
+    """
+    set_current_subject(user.email)
+    return user.email
+
+
+def build_ebs_connectors(db: Session | None = None) -> dict[str, EBSConnector]:
+    """One read-only OracleEBSConnector per active EBS environment.
+
+    Reads connection details from ebs_environments (the single source of
+    truth, encrypted at rest), using the dedicated read-only account — never
+    APPS. Keyed by the uppercased environment name, which is exactly what a
+    tool's `instance` parameter expects. Environments without a read-only
+    credential configured are skipped (with the reason), rather than silently
+    falling back to a privileged account.
+    """
+    init_thick_mode_if_configured(_THICK_MODE)
+
+    own_session = db is None
+    db = db or database.SessionLocal()
+    try:
+        rows = db.query(EbsEnvironment).filter(EbsEnvironment.is_active.is_(True)).all()
+        connectors: dict[str, EBSConnector] = {}
+        for env in rows:
+            if not env.readonly_user or not env.readonly_password_enc:
+                continue  # not onboarded for read-only access yet
+            if not (env.db_host and env.db_sid):
+                continue
+            password = crypto.decrypt(env.readonly_password_enc)
+            if not password:
+                continue  # undecryptable — degrade rather than connect wrong
+            dsn = f"{env.db_host}:{env.db_port or 1521}/{env.db_sid}"
+            connectors[env.name.upper()] = OracleEBSConnector(
+                dsn=dsn, user=env.readonly_user, password=password
+            )
+        return connectors
+    finally:
+        if own_session:
+            db.close()

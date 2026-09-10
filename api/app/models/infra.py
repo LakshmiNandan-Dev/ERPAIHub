@@ -36,6 +36,13 @@ class EbsEnvironment(Base):
     db_sid = Column(String(100), nullable=True)
     db_user = Column(String(100), nullable=True, server_default='apps')
     db_password_enc = Column(Text, nullable=True)  # encrypted
+    # Dedicated LEAST-PRIVILEGE, read-only account for the embedded EBSMCP
+    # tools (app.ebsmcp). Deliberately separate from db_user/db_password_enc
+    # (which is APPS, far too privileged for AI-driven reads): EBSMCP's whole
+    # safety model rests on the database itself refusing writes, so its tools
+    # connect with this account only. Encrypted at rest, same as the others.
+    readonly_user = Column(String(100), nullable=True)
+    readonly_password_enc = Column(Text, nullable=True)
     # Intrinsic database identity (captured by probing) — used to detect a mis-labelled PROD.
     db_id = Column(String(40), nullable=True)        # v$database.dbid
     global_name = Column(String(255), nullable=True) # global_name
