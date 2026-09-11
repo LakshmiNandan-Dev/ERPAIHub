@@ -42,3 +42,33 @@ it. Three distinct failures, one cause:
 `APPS` is the access path Oracle documents for application code, is uniform
 across every product schema, and gives a read-only account a single grant
 target.
+### 5. Identity resolution unions multiple open mappings (2026-09-11)
+
+`api/app/ebsmcp/identity/postgres_resolver.py` and
+`api/app/ebsmcp/identity/tables.py`.
+
+Upstream EBSMCP has the same defect and it is NOT fixed there, so
+re-vendoring will reintroduce it.
+
+`resolve()` selected open mappings for (subject, environment, target_system)
+and took `.first()`. But the schema's partial unique index keys on
+`(entra_subject, environment, target_system, coalesce(domain,''))`, so a
+functional user holding both a finance and an scm grant is two valid open
+rows — not a data error. `.first()` returned whichever row the database
+happened to hand back, so that caller could be given the wrong domain's
+mapped_role and org scope with nothing anywhere reporting it. Silent, and
+in the permissions layer.
+
+It now resolves every open mapping and unions them: org IDs combined,
+mapped_role joined so a two-grant caller is not described as holding one.
+Instance scope unions to the BROADER grant — `None` means "not
+instance-scoped", so a single unrestricted mapping leaves the union
+unrestricted; only when every mapping is restricted do the allowlists
+combine. Treating `None` as an empty set there would have silently narrowed
+access rather than widening it.
+
+The table copy gained the `domain` column, which it never carried.
+
+Single-mapping resolution is unchanged, so `ebs_dba` — whose domain is
+always NULL, and the only persona any mounted tool uses today — behaves
+exactly as before.

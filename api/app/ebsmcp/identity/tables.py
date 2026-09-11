@@ -23,6 +23,11 @@ identity_mappings = Table(
     Column("environment", String(10), nullable=False),
     Column("target_system", String(10), nullable=False),
     Column("mapped_role", String(240), nullable=False),
+    # NULL for the ebs_dba persona, required for ebs/fusion. Part of the
+    # partial unique index upstream (entra_subject, environment,
+    # target_system, coalesce(domain,'')), which is exactly what permits a
+    # functional user to hold one open mapping per domain at once.
+    Column("domain", String(40), nullable=True),
     Column("effective_end_date", TZDateTime, nullable=True),
     Column("instance_scope_restricted", Boolean, nullable=False, server_default=false()),
 )

@@ -27,48 +27,84 @@ class PostgresIdentityResolver(IdentityResolver):
         self._environment = environment
 
     def resolve(self, subject: str, target_system: TargetSystem) -> ResolvedIdentity:
+        """Resolve every OPEN mapping for this subject and persona, unioned.
+
+        A subject can legitimately hold more than one open mapping for the
+        same target_system: the schema's partial unique index keys on
+        (entra_subject, environment, target_system, coalesce(domain,'')), so
+        a functional user with both a finance and an scm grant is two valid
+        rows, not a data error. This used to SELECT ... .first(), which
+        silently returned whichever row the database happened to hand back —
+        a caller could be handed the wrong domain's role and org scope with
+        nothing anywhere saying so.
+
+        The union is the broader of the grants the person actually holds,
+        never wider than that: org IDs are combined, and the entitlement
+        filter still treats the result as a ceiling a request may narrow but
+        never widen.
+
+        ebs_dba is unaffected — its domain is always NULL, so at most one
+        mapping can be open and the single-mapping path is byte-identical to
+        the old behaviour.
+        """
         with self._engine.connect() as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 select(
                     identity_mappings.c.id,
                     identity_mappings.c.mapped_role,
                     identity_mappings.c.instance_scope_restricted,
+                    identity_mappings.c.domain,
                 ).where(
                     identity_mappings.c.entra_subject == subject,
                     identity_mappings.c.environment == self._environment,
                     identity_mappings.c.target_system == target_system,
                     identity_mappings.c.effective_end_date.is_(None),
                 )
-            ).first()
+            ).all()
 
-            if row is None:
+            if not rows:
                 raise LookupError(
                     f"No identity mapping for subject={subject!r}, "
                     f"environment={self._environment!r}, target_system={target_system!r}."
                 )
 
-            mapping_id, mapped_role, instance_scope_restricted = row
+            mapping_ids = [row[0] for row in rows]
+
             org_ids = conn.execute(
                 select(identity_mapping_org_scope.c.org_id).where(
-                    identity_mapping_org_scope.c.identity_mapping_id == mapping_id
+                    identity_mapping_org_scope.c.identity_mapping_id.in_(mapping_ids)
                 )
             ).scalars().all()
 
+            # None means "not instance-scoped" and is the WIDER grant, so a
+            # single unrestricted mapping makes the union unrestricted. Only
+            # when every mapping is restricted do the allowlists combine —
+            # treating None as an empty set here would silently narrow a
+            # person's access instead of widening it.
             allowed_instances: tuple[str, ...] | None = None
-            if instance_scope_restricted:
+            if all(row[2] for row in rows):
                 allowed_instances = tuple(
-                    conn.execute(
-                        select(identity_mapping_instance_scope.c.instance_name).where(
-                            identity_mapping_instance_scope.c.identity_mapping_id == mapping_id
-                        )
-                    ).scalars().all()
+                    dict.fromkeys(
+                        conn.execute(
+                            select(identity_mapping_instance_scope.c.instance_name).where(
+                                identity_mapping_instance_scope.c.identity_mapping_id.in_(
+                                    mapping_ids
+                                )
+                            )
+                        ).scalars().all()
+                    )
                 )
+
+        # mapped_role is echoed on every tool answer, so showing only one of
+        # two grants would misrepresent who the caller is. Sorted for a
+        # stable string regardless of row order.
+        mapped_role = ", ".join(sorted({row[1] for row in rows}))
 
         return ResolvedIdentity(
             subject=subject,
             environment=self._environment,
             target_system=target_system,
             mapped_role=mapped_role,
-            allowed_org_ids=tuple(org_ids),
+            allowed_org_ids=tuple(dict.fromkeys(org_ids)),
             allowed_instances=allowed_instances,
         )
