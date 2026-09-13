@@ -20,9 +20,16 @@ rather than diverging tool code here; keep changes limited to the seams above.
 `api/app/ebsmcp/tools/dba/*.py` (7 files, 58 references) and the convention
 docstring in `connectors/base.py`.
 
-Found by running the catalog against a live R12.2 instance. Upstream EBSMCP
-has the same defect — it is NOT fixed there, so re-vendoring will reintroduce
-it. Three distinct failures, one cause:
+Found by running the catalog against a live R12.2 instance.
+
+**Upstream has since converged.** EBSMCP commit 6ffb434 (2026-09-12) applied
+the same sweep — 54 `APPLSYS.` and 2 `AD.` qualifiers, plus the convention
+docstring in `connectors/base.py`. This entry is therefore RETIRABLE at the
+next sync: re-vendoring no longer reintroduces the defect, and once the sync
+lands this section should be deleted rather than defended. Kept until then so
+the divergence is not silently forgotten mid-sync.
+
+Three distinct failures, one cause:
 
 * **Silent double-counting.** With Online Patching enabled, the `APPLSYS`
   base tables hold one row per edition. `APPLSYS.FND_CONCURRENT_PROGRAMS_TL`
