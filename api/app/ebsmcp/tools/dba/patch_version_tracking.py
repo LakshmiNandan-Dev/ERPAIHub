@@ -80,12 +80,14 @@ _ADOP_PHASE_COLUMNS = (
 
 
 def build_adop_session_query(session_id: int | None) -> tuple[str, dict[str, Any]]:
-    """Columns verified against a live instance (2026-09-02): the table
-    is APPS.AD_ADOP_SESSIONS, not AD.AD_ADOP_SESSIONS — this instance
-    has no AD schema at all (0 tables owned by AD in ALL_TABLES); a
-    synonym check confirmed the real owner is APPLSYS. SESSION_INPUT_DATA
-    (a CLOB of session XML) is deliberately excluded — internal/verbose,
-    not diagnostic.
+    """Columns verified against a live instance (2026-09-02): the table's
+    OWNER is APPLSYS, not AD — this EBS instance has no AD schema at all (0
+    tables owned by AD in ALL_TABLES), confirmed by a synonym check. It is
+    READ through APPS like every other product object (see
+    connectors/base.py), which resolves to the same table: APPS and APPLSYS
+    returned identical row counts (28 each) when measured on 2026-09-11.
+    SESSION_INPUT_DATA (a CLOB of session XML) is deliberately excluded —
+    internal/verbose, not diagnostic.
 
     Pure function, unit-tested directly — see
     test_patch_version_tracking_query.py.
