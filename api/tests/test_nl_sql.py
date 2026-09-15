@@ -53,7 +53,9 @@ class TestRunExtraction:
         ).first()
         assert snap is not None
         assert snap.scan_status == "ok"
-        assert snap.table_count == 4          # MockCatalog's fixed AP/GL sample
+        # MockCatalog's AP/GL sample grew to 7 with the join-mining fixtures
+        # (ap_terms, gl_journals_all, gl_ledgers) -- see MockCatalog's docstring.
+        assert snap.table_count == 7
         assert snap.fk_count is not None
         assert snap.schema_json is not None
 
@@ -112,7 +114,7 @@ class TestServicePool:
         nl_sql_service.run_extraction(env["id"], triggered_by=None, mock=True)
         svc = nl_sql_service.get_service(db_session, env["id"])
         schema = svc.schemas[nl_sql_service._schema_id(env["id"])]
-        assert len(schema.tables) == 4
+        assert len(schema.tables) == 7
 
     def test_pool_caches_across_calls(self, client, admin_headers, db_session):
         env = _make_env(client, admin_headers)
