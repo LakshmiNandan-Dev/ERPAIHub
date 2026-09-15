@@ -42,6 +42,14 @@ class RawLookup:
     values: tuple = ()
 
 
+@dataclass
+class RawCodeObject:
+    name: str
+    kind: str            # "view" | "materialized_view" | "package_body" | "procedure"
+                          # | "function" | "type_body" | "trigger"
+    text: str
+
+
 class CatalogSource:
     """Interface every catalog reader implements (real Oracle or mock)."""
 
@@ -51,6 +59,7 @@ class CatalogSource:
     def foreign_keys(self) -> list[RawFk]: return []          # EBS often declares none
     def flex_segments(self) -> list[RawFlex]: return []
     def lookups(self) -> list[RawLookup]: return []
+    def code_objects(self) -> list[RawCodeObject]: return []  # views + PL/SQL bodies
 
 
 # -- the real adapter's SQL (HYBRID; read-only data dictionary + FND setup) ----
@@ -79,7 +88,7 @@ _DEFAULT_SKIP_SUFFIXES = ("_BAK", "_BACKUP", "_BACK", "_OLD")
 
 
 def _queries(scope: str) -> dict[str, str]:
-    """The five bulk queries, parameterized by the in-scope-owner subquery."""
+    """The bulk queries, parameterized by the in-scope-owner subquery."""
     return {
         # table LIST from ALL_TABLES (everything real in the in-scope owners)
         "tables": f"""
@@ -88,11 +97,21 @@ def _queries(scope: str) -> dict[str, str]:
              WHERE t.owner IN ({scope})
                AND t.table_name NOT LIKE '%$%'
         """,
-        # APPS synonym overlay: (owner, table) -> canonical name
+        # APPS + PUBLIC synonym overlay: (owner, table) -> canonical name.
+        # PUBLIC matters as much as APPS here -- confirmed against a real
+        # instance: APPS-owned code routinely references tables completely
+        # unqualified ("FROM AP_INVOICES_ALL", no owner, no alias-worthy
+        # synonym-name games), which Oracle can only resolve via a PUBLIC
+        # synonym when APPS has no PRIVATE one of its own. Missing PUBLIC
+        # meant those tables fell back to owner-qualified names even though
+        # the exact bare name real EBS code already uses was resolvable.
+        # APPS-owned still wins over PUBLIC when both exist for one table
+        # (Oracle's own resolution order: private beats public) -- see the
+        # merge in _load() below.
         "synonyms": f"""
-            SELECT s.synonym_name, s.table_owner, s.table_name
+            SELECT s.synonym_name, s.table_owner, s.table_name, s.owner
               FROM all_synonyms s
-             WHERE s.owner = 'APPS'
+             WHERE s.owner IN ('APPS', 'PUBLIC')
                AND s.table_owner IN ({scope})
         """,
         # ALL columns for the in-scope owners, keyed by base (owner, table)
@@ -111,6 +130,21 @@ def _queries(scope: str) -> dict[str, str]:
              WHERE con.constraint_type = 'P'
                AND con.owner IN ({scope})
         """,
+        # unique-index columns, keyed by base (owner, table, index): EBS's OWN
+        # seed tables overwhelmingly have NO formal PRIMARY KEY constraint --
+        # the real key is a unique index instead (Oracle Applications' own
+        # convention, historically named <table>_U1, though not reliably so
+        # for long/"_ALL" names -- ap_invoices_all's is AP_INVOICES_U1, not
+        # AP_INVOICES_ALL_U1). Used as a fallback in _load() only for tables
+        # the constraint-based query above found nothing for.
+        "unique_indexes": f"""
+            SELECT i.owner, i.table_name, i.index_name, ic.column_name, ic.column_position
+              FROM all_indexes i
+              JOIN all_ind_columns ic
+                ON ic.index_owner = i.owner AND ic.index_name = i.index_name
+             WHERE i.owner IN ({scope})
+               AND i.uniqueness = 'UNIQUE'
+        """,
         # declared FKs (rare in EBS); both ends as base (owner, table)
         "foreign_keys": f"""
             SELECT fc.owner, fc.table_name, fcc.column_name,
@@ -126,6 +160,36 @@ def _queries(scope: str) -> dict[str, str]:
              WHERE fc.constraint_type = 'R'
                AND fc.owner IN ({scope})
         """,
+        # view definitions -- single SELECT text per view, sqlglot-parseable
+        "views": f"""
+            SELECT v.view_name, v.text
+              FROM all_views v
+             WHERE v.owner IN ({scope})
+        """,
+        # materialized view defining queries -- same shape as views (one clean
+        # SELECT per object), separate dictionary view from ALL_VIEWS
+        "mviews": f"""
+            SELECT m.mview_name, m.query
+              FROM all_mviews m
+             WHERE m.owner IN ({scope})
+        """,
+        # PL/SQL bodies, stored ONE ROW PER LINE -- concatenated client-side by
+        # (name, type) below; TYPE = the code kinds worth mining for embedded
+        # joins (package/type SPECs carry no executable SQL, only declarations)
+        "source": f"""
+            SELECT s.name, s.type, s.line, s.text
+              FROM all_source s
+             WHERE s.owner IN ({scope})
+               AND s.type IN ('PACKAGE BODY', 'PROCEDURE', 'FUNCTION', 'TYPE BODY')
+             ORDER BY s.name, s.type, s.line
+        """,
+        # trigger bodies -- one row per trigger, body text only (no CREATE
+        # TRIGGER header/WHEN clause -- fine, we only mine equality predicates)
+        "triggers": f"""
+            SELECT t.trigger_name, t.trigger_body
+              FROM all_triggers t
+             WHERE t.owner IN ({scope})
+        """,
     }
 
 
@@ -138,11 +202,44 @@ class OracleCatalog(CatalogSource):
     licensed/shared (+ extra) owner, then renamed to its canonical APPS synonym
     when one exists, else kept owner-qualified. BULK set-based reads, cached once.
 
+    Primary keys fall back to a unique index when no PRIMARY KEY constraint
+    exists (`unique_indexes` in `_load()`) -- confirmed against a real EBS
+    instance that this is the norm, not the exception: core seed tables like
+    `ap_invoices_all`, `ap_suppliers`, and `gl_code_combinations` have ZERO
+    'P'-type constraints, only a unique index (Oracle Applications' own
+    long-standing convention). Without this fallback, naming-convention FK
+    inference in `extractor.py` finds almost nothing real, since `pk_owner`
+    requires a table to own its PK column NAME and most tables never register
+    one at all.
+
+    Owner-qualified table names ("owner.table") are also the norm, not the
+    exception, in practice -- APPS-owned synonyms only covered ~9% of tables
+    on the real instance this was verified against (many synonyms there are
+    owned by a read-only clone schema like APPSRO instead, or don't exist).
+    That's still correct behavior: an owner-qualified reference is guaranteed
+    executable by the connected account; a bare name that account can't
+    actually resolve unqualified would not be.
+
     The grouping/renaming/caching logic is tested via a fake cursor in
     test_extract; the live SQL still needs a real read-only EBS account (with
     dictionary access) to confirm against a given instance. Flexfield/lookup
     enrichment for live extraction is a documented follow-up -- the extractor
-    degrades gracefully when those are absent."""
+    degrades gracefully when those are absent.
+
+    `code_objects()` additionally bulk-reads view text (`ALL_VIEWS`),
+    materialized view queries (`ALL_MVIEWS`), PL/SQL bodies (`ALL_SOURCE`, one
+    row per line -- concatenated here by (name, type): package bodies,
+    standalone procedures/functions, and object type bodies) and trigger
+    bodies (`ALL_TRIGGERS`); `code_mining.mine_join_hints` scans that text for
+    join predicates the naming-convention inference in `extractor.py` can't
+    see -- most notably any join on a non-`*_id` business key (e.g. GL's
+    `period_name`), which naming inference structurally never considers, plus
+    the `*_id` case where the column name doesn't match the target's PK name.
+    Same caveat as the rest of this adapter: written and tested via a fake
+    cursor, unexercised against a real instance. Two known gaps: `wrap`-
+    obfuscated PL/SQL (common on stock Oracle-delivered EBS code) yields no
+    text to mine, and code in an owner outside the licensed/shared scope above
+    is never read."""
 
     def __init__(self, cursor, extra_owners=(), skip_suffixes=_DEFAULT_SKIP_SUFFIXES):
         self.cur = cursor
@@ -154,6 +251,7 @@ class OracleCatalog(CatalogSource):
         self._cols: dict[str, list[RawColumn]] = {}
         self._pk: dict[str, list[str]] = {}
         self._fks: list[RawFk] | None = None
+        self._code: list[RawCodeObject] | None = None
 
     @staticmethod
     def _ident(owner: str) -> str:
@@ -173,17 +271,37 @@ class OracleCatalog(CatalogSource):
     def _load(self) -> None:
         if self._tables is not None:
             return
-        # 1. synonym overlay first: base (owner, table) -> canonical APPS name
+        # 0. the connected user needs no synonym at all for tables IT owns --
+        # Oracle resolves an unqualified name in your OWN schema before ever
+        # checking a synonym, public or private. Confirmed needed extracting
+        # AS the apps account itself: 1,153 of APPS's own tables had no
+        # synonym of either kind yet are trivially bare-referenceable, and
+        # were falling back to a needless "apps.table_name" qualification.
+        self.cur.execute("SELECT USER FROM dual")
+        connected_user = self.cur.fetchall()[0][0].upper()
+        # 1. synonym overlay first: base (owner, table) -> canonical name.
+        # APPS-owned wins over PUBLIC when a table has both (Oracle's own
+        # resolution order: a private synonym shadows a public one of the
+        # same/different name) -- track which kind won each key so a later
+        # PUBLIC row can't overwrite an already-settled APPS one.
         self.cur.execute(self._sql["synonyms"])
-        syn = {(o.upper(), t.upper()): name.lower()
-               for name, o, t in self.cur.fetchall()}
-        # 2. table list from ALL_TABLES; canonical = synonym name, else owner.table
+        syn: dict[tuple, str] = {}
+        syn_is_apps: dict[tuple, bool] = {}
+        for name, o, t, syn_owner in self.cur.fetchall():
+            key = (o.upper(), t.upper())
+            is_apps = syn_owner.upper() == "APPS"
+            if key not in syn or (is_apps and not syn_is_apps[key]):
+                syn[key] = name.lower()
+                syn_is_apps[key] = is_apps
+        # 2. table list from ALL_TABLES; canonical = synonym name, else the
+        # bare name (if owned by the connected user), else owner.table
         self.cur.execute(self._sql["tables"])
         for owner, tname in self.cur.fetchall():
             if self._skip(tname):
                 continue
             key = (owner.upper(), tname.upper())
-            self._canon[key] = syn.get(key, f"{owner}.{tname}".lower())
+            fallback = tname.lower() if owner.upper() == connected_user else f"{owner}.{tname}".lower()
+            self._canon[key] = syn.get(key, fallback)
         self._tables = sorted(set(self._canon.values()))
         # 3. columns / 4. PKs, mapped from base (owner, table) to canonical
         self.cur.execute(self._sql["columns"])
@@ -197,6 +315,22 @@ class OracleCatalog(CatalogSource):
             c = self._canon.get((owner.upper(), tname.upper()))
             if c:
                 self._pk.setdefault(c, []).append(col.lower())
+        # 5. unique-index fallback for tables with NO constraint-based PK above
+        # (the EBS norm -- see the "unique_indexes" query comment)
+        self.cur.execute(self._sql["unique_indexes"])
+        idx_cols: dict[tuple, dict[str, list[tuple[int, str]]]] = {}
+        for owner, tname, idx_name, col, pos in self.cur.fetchall():
+            key = (owner.upper(), tname.upper())
+            idx_cols.setdefault(key, {}).setdefault(idx_name, []).append((pos, col.lower()))
+        for key, idxs in idx_cols.items():
+            c = self._canon.get(key)
+            if not c or self._pk.get(c):
+                continue                       # already has a real PK constraint
+            # smallest unique index (fewest columns; single-column preferred),
+            # tie-broken alphabetically -- this recovers EBS's own "_U1 is the
+            # primary key" convention without depending on that exact name
+            chosen = min(idxs, key=lambda n: (len(idxs[n]), n))
+            self._pk[c] = [col for _, col in sorted(idxs[chosen])]
 
     def tables(self):
         self._load()
@@ -226,12 +360,48 @@ class OracleCatalog(CatalogSource):
                 self._fks = []
         return list(self._fks)
 
+    def code_objects(self):
+        if self._code is None:                # views + PL/SQL bodies; cached like the rest
+            out: list[RawCodeObject] = []
+            self.cur.execute(self._sql["views"])
+            for vname, text in self.cur.fetchall():
+                if text:
+                    out.append(RawCodeObject(vname.lower(), "view", str(text)))
+
+            self.cur.execute(self._sql["mviews"])
+            for mname, text in self.cur.fetchall():
+                if text:
+                    out.append(RawCodeObject(mname.lower(), "materialized_view", str(text)))
+
+            self.cur.execute(self._sql["source"])
+            kind_by_type = {
+                "PACKAGE BODY": "package_body", "PROCEDURE": "procedure",
+                "FUNCTION": "function", "TYPE BODY": "type_body",
+            }
+            bodies: dict[tuple[str, str], list[str]] = {}
+            for oname, otype, _line, text in self.cur.fetchall():
+                bodies.setdefault((oname, otype), []).append(text or "")
+            for (oname, otype), lines in bodies.items():
+                out.append(RawCodeObject(oname.lower(), kind_by_type[otype], "".join(lines)))
+
+            self.cur.execute(self._sql["triggers"])
+            for tname, body in self.cur.fetchall():
+                if body:
+                    out.append(RawCodeObject(tname.lower(), "trigger", str(body)))
+            self._code = out
+        return list(self._code)
+
 
 # -- a small AP + GL mock instance (the spec's proposed starter modules) ------
 class MockCatalog(CatalogSource):
     """Simulates a tiny EBS: AP invoices/suppliers + the GL accounting flexfield.
     Declares ZERO foreign keys (as real EBS usually does) -- the extractor must
-    infer the join graph from naming conventions."""
+    infer the join graph from naming conventions, PLUS code_objects() mining:
+    `ap_invoices_all.terms_id` -> `ap_terms.term_id` (an `*_id` column whose
+    name doesn't match the target's PK, mined from a view + a materialized
+    view) and `gl_journals_all.ledger_name` -> `gl_ledgers.ledger_name` (a
+    non-`*_id` business key naming inference never even considers, mined from
+    a TYPE BODY member function)."""
 
     _COLUMNS: dict[str, list[RawColumn]] = {
         "ap_suppliers": [
@@ -249,6 +419,7 @@ class MockCatalog(CatalogSource):
             RawColumn("invoice_amount", "NUMBER"),
             RawColumn("invoice_type_lookup_code", "VARCHAR2"),
             RawColumn("payment_status_flag", "VARCHAR2"),
+            RawColumn("terms_id", "NUMBER"),        # name doesn't match ap_terms.term_id
         ],
         "ap_invoice_lines_all": [
             RawColumn("invoice_line_id", "NUMBER", False),
@@ -266,13 +437,55 @@ class MockCatalog(CatalogSource):
             RawColumn("segment4", "VARCHAR2"),
             RawColumn("segment5", "VARCHAR2"),
         ],
+        "ap_terms": [
+            RawColumn("term_id", "NUMBER", False),
+            RawColumn("name", "VARCHAR2"),
+        ],
+        "gl_journals_all": [
+            RawColumn("journal_id", "NUMBER", False),
+            RawColumn("ledger_name", "VARCHAR2"),    # business key, NOT an *_id column
+        ],
+        "gl_ledgers": [
+            RawColumn("ledger_name", "VARCHAR2", False),
+            RawColumn("status", "VARCHAR2"),
+        ],
     }
     _PK = {
         "ap_suppliers": ["vendor_id"],
         "ap_invoices_all": ["invoice_id"],
         "ap_invoice_lines_all": ["invoice_line_id"],
         "gl_code_combinations": ["code_combination_id"],
+        "ap_terms": ["term_id"],
+        "gl_journals_all": ["journal_id"],
+        "gl_ledgers": ["ledger_name"],
     }
+    _CODE = [
+        RawCodeObject(
+            "ap_invoices_terms_v", "view",
+            "SELECT i.invoice_id, t.name terms_name "
+            "FROM ap_invoices_all i, ap_terms t "
+            "WHERE i.terms_id = t.term_id",
+        ),
+        RawCodeObject(
+            "ap_invoices_terms_mv", "materialized_view",
+            "SELECT i.invoice_id, t.name terms_name "
+            "FROM ap_invoices_all i, ap_terms t "
+            "WHERE i.terms_id = t.term_id",
+        ),
+        RawCodeObject(
+            "gl_ledger_util_ty", "type_body",
+            "TYPE BODY gl_ledger_util_ty IS\n"
+            "  MEMBER FUNCTION status_for(p_journal_id NUMBER) RETURN VARCHAR2 IS\n"
+            "    v_status VARCHAR2(30);\n"
+            "  BEGIN\n"
+            "    SELECT l.status INTO v_status\n"
+            "      FROM gl_journals_all j, gl_ledgers l\n"
+            "     WHERE j.journal_id = p_journal_id AND j.ledger_name = l.ledger_name;\n"
+            "    RETURN v_status;\n"
+            "  END status_for;\n"
+            "END;\n",
+        ),
+    ]
     _FLEX = [  # the customer's Accounting Flexfield segment labels
         RawFlex("gl_code_combinations", "segment1", "company"),
         RawFlex("gl_code_combinations", "segment2", "cost center"),
@@ -301,3 +514,6 @@ class MockCatalog(CatalogSource):
 
     def lookups(self):
         return list(self._LOOKUPS)
+
+    def code_objects(self):
+        return list(self._CODE)

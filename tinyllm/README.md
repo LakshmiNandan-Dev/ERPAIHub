@@ -23,6 +23,10 @@ Two commands, run entirely on the customer's machine:
 tinyllm extract --dsn 'readonly_user/pwd@host:1521/EBS' --out schema.json
 #   roles, flexfield (segmentN) business labels, lookup domains, and the join
 #   graph INFERRED from naming conventions (real EBS declares almost no FKs)
+#   PLUS MINED from view/materialized-view/package-body/procedure/function/
+#   type-body/trigger SQL text -- joins on a non-*_id business key, or an *_id
+#   join whose column name doesn't match the target's PK, are invisible to
+#   naming inference alone but stated explicitly in the code that performs them
 
 # 2. Fine-tune the shipped vendor base on THEIR schema (single GPU/CPU, minutes)
 tinyllm train --schema schema.json --init base.pt --tok base_tok.json --out customer_model
@@ -135,7 +139,7 @@ forces schema-linking) · `ebs` (real EBS conventions — the one that transfers
 | `tinyllm/train/`        | cross-schema + customer-local splits, training loop, checkpoints |
 | `tinyllm/decode/`       | graph-constrained decoding (incremental gate + optional hard logit-mask) |
 | `tinyllm/retrieve/`     | inference-time schema retrieval (question → relevant tables) |
-| `tinyllm/extract/`      | EBS catalog → `Schema`: roles, flexfield/lookup meaning, FK inference; mock + `oracledb` |
+| `tinyllm/extract/`      | EBS catalog → `Schema`: roles, flexfield/lookup meaning, FK inference + code-mined joins (views, materialized views, package bodies, procedures, functions, type bodies, triggers); mock + `oracledb` |
 | `tinyllm/eval/`         | execution-accuracy harness (SQLite stand-in DB + result-set compare) |
 | `tinyllm/db/`           | runtime DB gate: `EXPLAIN`-validate + read-only execute (SqliteDb / OracleDb) |
 | `tinyllm/serve/`        | `QueryService` + FastAPI (`/query`,`/execute`) + self-contained web UI |
@@ -165,13 +169,68 @@ the whole gate chain. For other targets:
 
 **Solid (built + tested):** the from-scratch data engine, tokenizer, and model;
 cross-schema training; retrieval; incremental graph-constrained decoding;
-execution-accuracy eval; the EBS catalog extractor (mapping + FK inference);
-**real-EBS transfer via EBS-realistic training**; the customer-local
-extract→train→serve workflow with preview-confirm safety.
+execution-accuracy eval; the EBS catalog extractor (mapping + FK inference,
+plus join-predicate mining from view/materialized-view/package-body/
+procedure/function/type-body/trigger text); **real-EBS transfer via
+EBS-realistic training**; the customer-local extract→train→serve workflow
+with preview-confirm safety.
 
 **Left:**
-- **Live Oracle** — the `oracledb` read-only adapter + `EXPLAIN` gate are written
-  and mock-tested but unexercised against a real instance.
+- **Live Oracle** — the `oracledb` read-only extraction path (`ALL_TABLES`/
+  `ALL_TAB_COLUMNS`/`ALL_CONSTRAINTS`/`ALL_INDEXES`/`ALL_VIEWS`/`ALL_MVIEWS`/
+  `ALL_SOURCE`/`ALL_TRIGGERS`) has now been run end-to-end against a real
+  production EBS instance: 21,880 tables, 20,204 views extracted successfully.
+  That run also surfaced (and fixed) a real gap: EBS's own seed tables almost
+  never have a PRIMARY KEY constraint — `ap_invoices_all`, `ap_suppliers`,
+  `gl_code_combinations` all have zero — only a unique index (Oracle
+  Applications' own convention). Without falling back to that, naming-
+  convention FK inference finds almost nothing real; `primary_key()` now does.
+  The `EXPLAIN`-validate + read-only execute gate is still written and
+  mock-tested only, unexercised against a real instance. The PL/SQL join
+  miner is a regex-based heuristic (views/mviews get a real sqlglot parse;
+  procedural code doesn't) — it only ever adds an edge when both sides
+  resolve to a real catalog table, but it can still miss joins expressed
+  unconventionally (dynamic SQL, `%TYPE`-driven column names, `wrap`-
+  obfuscated PL/SQL).
+- **Customer-local training, now fixed for module-scale schemas, still not for
+  a full unscoped instance.** `build_pairs_over_schema` used to serialize the
+  WHOLE given schema into every example with no retrieval narrowing (fine at
+  demo scale; verified broken at real full-EBS scale, ~22K tables — a single
+  example's schema text ran ~10MB). Three real bugs are now fixed, verified
+  against a real ~700-table EBS module (AP+GL) with a full extract→train
+  smoke test that actually completed (loss dropped 4.41→3.62 over 20 steps):
+  (1) `link_tables` had no output cap at all — a typical question pulled in
+  over half the catalog (~84,000 estimated tokens against a 512-token model);
+  it's now bounded by a column-count budget calibrated against the real
+  tokenizer (~10 tok/col measured — a char-count guess was off ~8x); (2) even
+  correctly retrieved, real (wide) EBS tables — up to 194 columns on one table
+  — still didn't fit; `serialize_schema` now accepts a per-table column
+  allowlist, and `build_pairs_over_schema` trims each table to the columns the
+  gold AST actually references (PK/FK always kept) instead of dumping every
+  column; (3) the query sampler crashed outright on a keyless fact table
+  (`Table.primary_key` is `None` when a table has no PK — common for EBS
+  staging/interface tables — and `_pick_group`'s last-resort fallback didn't
+  handle that). Residual: ~19.5% of generated examples still exceed 512 tokens
+  (multi-table L4/L5 queries joining several wide real tables) — not a hard
+  failure (the model is RoPE-based; `max_seq_len` isn't enforced anywhere in
+  `transformer.py`, so longer sequences run, just less efficiently), but a
+  known, bounded (max seen: 918 tokens) rather than fully closed gap.
+  Making the FULL, unscoped instance directly fine-tunable is still a
+  separate, larger follow-up: `link_tables` rebuilds its `SchemaGraph` and
+  rescans every table's terms from scratch on every call, fine at module scale
+  but not cached for repeated calls against a full ~22K-table catalog.
+- **Naming-convention FK inference at full-instance scale** — `pk_owner` in
+  `extractor.py` grants a table "ownership" of its PK column NAME globally
+  across every owner in scope; at full-instance scale (178 products) generic
+  surrogate names (`party_id`, `batch_id`, `task_id`, ...) are each the PK of
+  many unrelated tables, so a column can get linked to a semantically
+  unrelated table purely by which one the scan happened to see first — e.g.
+  `ap_invoices_all.party_id` resolved to an obscure `ar`-owned ETL log table
+  instead of the real party master. Scoping extraction to a specific module
+  set (e.g. AP+GL) removes most of that ambiguity by construction, since the
+  generic names mostly aren't reused within one module. Making the unscoped
+  case correct would need real disambiguation (e.g. preferring a same-module
+  target, or a confidence signal) rather than first-seen-wins.
 - **Last-mile accuracy** — remaining errors are lookup-value / column-selection
   slips (not garbling); the customer fine-tune and value-constrained decoding
   close them.

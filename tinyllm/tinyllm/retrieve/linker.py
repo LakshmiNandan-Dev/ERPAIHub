@@ -85,38 +85,108 @@ def _component(graph: SchemaGraph, start: str) -> set[str]:
     return seen
 
 
-def link_tables(question: str, schema: Schema, max_component: int = 8) -> list[str]:
+def link_tables(question: str, schema: Schema, max_component: int = 8,
+                max_columns: int = 40) -> list[str]:
     """Pick the relevant tables for `question` out of (a possibly huge) `schema`.
 
     Seeds = tables whose labels the question mentions; we return the FK-connected
     module around the strongest seed. Small modules are returned whole (they ARE
     the training-shaped view); large modules are narrowed to seeds + connecting
-    paths + one FK hop.
+    paths + one FK hop, ranked by score and added under a COLUMN-COUNT budget
+    (`max_columns` -- a tokenizer-free proxy for staying inside the encoder's
+    context window) so the result never balloons past what the model can take.
+
+    Column count, not table count, bounds the budget: real catalogs have wildly
+    uneven table widths (a 6-column lookup table vs. a 194-column transaction
+    header), so a pure table-count cap doesn't reliably bound serialized size
+    the way a column-count cap does. Verified against a real ~700-table EBS
+    module: uncapped, a typical question pulled in over half the catalog
+    (~84,000 estimated tokens against a 512-token model); capped, results stay
+    in the low tens of tables.
+
+    `max_columns=40` is calibrated against the SHIPPED tokenizer's real output
+    (~10 tokens/column measured against `serialize_schema` on real EBS column
+    names -- long compound identifiers fragment heavily against the ~2K-token
+    dev vocab), targeting comfortably under the 512-token encoder limit with
+    room left for the question. A char-count-based guess (~1.3 tok/col) was
+    off by ~8x; retune this if the vocab changes. KNOWN LIMITATION even at the
+    right calibration: a single very wide real table (`ap_invoices_all` has
+    194 columns) can exceed the budget by itself -- the "always keep the first
+    table" guard below means such an anchor is never dropped to zero results,
+    but its serialization can still overrun 512 tokens alone. Not fixed here;
+    would need column-level trimming within a table, which changes what this
+    function returns (table names only, today).
     """
     graph = SchemaGraph(schema)
     qstr = question.lower()
     qtokens = _toks(question)
     scored = [(t, _score(qtokens, qstr, t)) for t in schema.tables]
     seeds = [t for t, s in scored if s > 0]
+    by_name = {t.name: t for t in schema.tables}
+
     if not seeds:
-        return [t.name for t in schema.tables]      # can't link -> emit all (small schema)
+        if len(schema.tables) <= max_component:
+            return [t.name for t in schema.tables]   # can't link -> emit all (small schema)
+        return _budget_cap([t.name for t in schema.tables], by_name, max_columns)
 
     anchor = max(scored, key=lambda x: x[1])[0]
     comp = _component(graph, anchor.name)
     if len(comp) <= max_component:
         return sorted(comp)                          # one module -> serialize it whole
 
-    # large module: seeds in-component + the FK paths that connect them + 1 hop
-    seed_names = {t.name for t in seeds} & comp
-    relevant = {anchor.name} | seed_names
-    for sn in list(seed_names):
+    # large module: seeds in-component, ranked by score (strongest first),
+    # each pulling in its FK path back to the anchor, then light neighbor
+    # expansion -- all under the column budget so no single question-shaped
+    # slice can exceed what the model was trained to consume
+    relevant: list[str] = []
+    used_cols = 0
+
+    def try_add(name: str) -> bool:
+        nonlocal used_cols
+        if name in relevant:
+            return True
+        cols = len(by_name[name].columns)
+        if relevant and used_cols + cols > max_columns:
+            return False                              # always allow the very first table
+        relevant.append(name)
+        used_cols += cols
+        return True
+
+    try_add(anchor.name)
+    ranked_seeds = [t.name for t, s in sorted(scored, key=lambda x: -x[1])
+                    if s > 0 and t.name in comp]
+    for sn in ranked_seeds:
+        if sn == anchor.name:
+            continue
         path = graph.join_path(anchor.name, sn)
+        path_tables = [anchor.name, sn]
         if path:
             for fk in path:
-                relevant.update((fk.from_table, fk.to_table))
-    for tn in list(relevant):
-        relevant.update(nb for nb in graph.neighbors(tn) if nb in comp)
+                path_tables.extend((fk.from_table, fk.to_table))
+        for tn in dict.fromkeys(path_tables):         # de-dup, keep discovery order
+            try_add(tn)
+
+    for name in list(relevant):                        # light 1-hop expansion, budget-capped
+        for nb in graph.neighbors(name):
+            if nb in comp:
+                try_add(nb)
+
     return sorted(relevant)
+
+
+def _budget_cap(names: list[str], by_name: dict, max_columns: int) -> list[str]:
+    """Deterministic fallback for the no-seed / large-schema case: take tables
+    in a stable order until the column budget runs out, rather than emitting
+    everything (which is fine for a small schema but not a real EBS catalog)."""
+    out: list[str] = []
+    used = 0
+    for name in sorted(names):
+        cols = len(by_name[name].columns)
+        if out and used + cols > max_columns:
+            break
+        out.append(name)
+        used += cols
+    return out
 
 
 def merge_schemas(named: list[tuple[str, Schema]]) -> Schema:

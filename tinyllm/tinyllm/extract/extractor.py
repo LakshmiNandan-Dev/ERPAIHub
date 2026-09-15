@@ -5,12 +5,22 @@ semantic, join-aware schema the rest of TinyLLM needs:
 
   - **semantic roles** from EBS naming/type conventions (`*_id` → ID,
     `*_amount` → AMOUNT, `org_id` → ORG_ID, `segmentN` → flexfield, …);
-  - **flexfield meaning** (`segment2` → "cost center") from FND setup;
+  - **flexfield meaning** (`segment2` → "cost center") from FND setup, falling
+    back to a view/mview SELECT-list alias for the same column when FND setup
+    doesn't cover it (`code_mining.mine_column_labels`) — the most-frequent
+    alias wins when views disagree on what to call a column;
   - **lookup domains** (coded columns → their allowed values);
   - **the join graph INFERRED from naming conventions** — EBS rarely declares
     DB-level FKs, so we connect `vendor_id`/`code_combination_id`/… to the table
     whose primary key carries that name (plus a small hint table for the cases
-    where the column name differs from the target PK).
+    where the column name differs from the target PK);
+  - **the join graph MINED from view/PL-SQL text** — a join on a non-`*_id`
+    business key (e.g. GL's `period_name`) is invisible to naming-convention
+    inference by construction, and an `*_id` join whose column name doesn't
+    match the target's PK (and isn't in the hint table above) is invisible to
+    it in practice; but any view, materialized view, package body, procedure,
+    function, type body, or trigger that actually performs that join says so
+    in its SQL — `code_mining.mine_join_hints` scans `code_objects()` for it.
 
 Same `Schema`/`SchemaGraph` the synthetic generator produces, so everything
 downstream (sampler, retrieval, validators, model) consumes it unchanged.
@@ -20,6 +30,7 @@ from __future__ import annotations
 
 from ..schema_graph.types import Column, ColumnType, ForeignKey, Schema, SemanticRole, Table
 from .catalog import CatalogSource
+from .code_mining import mine_column_labels, mine_join_hints
 
 _AMOUNT_HINTS = ("amount", "total", "price", "cost", "balance", "net", "gross", "tax")
 _QTY_HINTS = ("quantity", "qty")
@@ -45,12 +56,20 @@ class EbsExtractor:
     def __init__(self, source: CatalogSource):
         self.source = source
 
-    def extract(self) -> Schema:
+    def extract(self, on_mining_progress=None) -> Schema:
+        """`on_mining_progress(done, total)`, if given, is passed through to
+        `mine_join_hints` -- see its docstring (the code-mining pass over
+        views/PL-SQL is the one step with nothing else signaling progress)."""
         src = self.source
         names = src.tables()
         pks = {t: set(src.primary_key(t)) for t in names}
         flex = {(f.table, f.column): f.business_label for f in src.flex_segments()}
         lookups = {(lk.table, lk.column): lk for lk in src.lookups()}
+        # materialized once, shared by both code-mining passes below (label
+        # mining here, join mining in _foreign_keys) rather than re-reading
+        # code_objects() from the source twice
+        code_objs = [(o.name, o.kind, o.text) for o in src.code_objects()]
+        mined_labels = mine_column_labels(code_objs, names)
         # which table OWNS each PK column name -> used to infer FK targets.
         # A table owns a name only when it's that table's SOLE primary key (a
         # surrogate identity others reference); composite-PK members are usually
@@ -62,15 +81,16 @@ class EbsExtractor:
 
         tables: list[Table] = []
         for tname in names:
-            cols = [self._column(tname, rc, pks[tname], flex, lookups)
+            cols = [self._column(tname, rc, pks[tname], flex, lookups, mined_labels.get(tname, {}))
                     for rc in src.columns(tname)]
             multi_org = tname.endswith("_all") and any(c.name == "org_id" for c in cols)
             tables.append(Table(tname, cols, is_multi_org=multi_org))
 
         return Schema(name="ebs", tables=tables,
-                      foreign_keys=self._foreign_keys(src, names, pk_owner))
+                      foreign_keys=self._foreign_keys(src, names, pk_owner, code_objs,
+                                                       on_mining_progress))
 
-    def _column(self, tname, rc, pk_set, flex, lookups) -> Column:
+    def _column(self, tname, rc, pk_set, flex, lookups, mined_labels) -> Column:
         name = rc.name.lower()
         tokens = name.split("_")
         ctype = _ora_type(rc.data_type)
@@ -100,11 +120,16 @@ class EbsExtractor:
             # domain is configured this is the best role we can assign
             role = SemanticRole.CODE
 
+        if business_label is None and name in mined_labels:
+            # FND flex/lookup metadata is authoritative when present; a mined
+            # view-alias label only fills in where that metadata is absent
+            business_label = mined_labels[name]
+
         return Column(name, ctype, nullable=rc.nullable, is_pk=is_pk, role=role,
                       business_label=business_label, lookup_type=lookup_type,
                       allowed_values=values)
 
-    def _foreign_keys(self, src, names, pk_owner) -> list[ForeignKey]:
+    def _foreign_keys(self, src, names, pk_owner, code_objs, on_mining_progress=None) -> list[ForeignKey]:
         fks: list[ForeignKey] = []
         seen: set[tuple] = set()
 
@@ -116,6 +141,9 @@ class EbsExtractor:
 
         for r in src.foreign_keys():                       # declared (rare in EBS)
             add(r.from_table, r.from_column, r.to_table, r.to_column)
+
+        for h in mine_join_hints(code_objs, names, on_mining_progress):  # mined from view/PL-SQL
+            add(h.from_table, h.from_column, h.to_table, h.to_column)
 
         for t in names:                                    # inferred by convention
             for rc in src.columns(t):

@@ -206,8 +206,10 @@ class QuerySampler:
             cols = fact.by_role(role)
             if cols:
                 return fact.name, self.rng.choice(cols)
-        # last resort: the primary key
-        return fact.name, fact.primary_key
+        # last resort: the primary key, or -- for tables with none at all
+        # (staging/interface tables are often legitimately keyless) -- simply
+        # the first column, so this never returns a group_col of None
+        return fact.name, fact.primary_key or fact.columns[0]
 
     def _add_filters(self, query: SelectQuery, fact: Table, features: list[str]):
         rng = self.rng

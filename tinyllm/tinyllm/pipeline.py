@@ -71,22 +71,34 @@ def generate_example(seed: int, level: int = 2, n_paraphrases: int = 0,
                                random.Random(seed ^ 0x9E3779B9))
 
 
-def serialize_schema(schema: Schema, tables: list[str] | None = None) -> str:
+def serialize_schema(schema: Schema, tables: list[str] | None = None,
+                     columns: dict[str, set[str]] | None = None) -> str:
     """Encoder-input serialization: tables : columns(pk/fk/role) | ...
 
     `tables` lets us emit only the retrieved subgraph; None emits all.
+
+    `columns`, if given, further trims a table to just the named columns
+    (PK and FK columns are always kept too, regardless of `columns`, so join
+    structure stays legible) -- a table with no entry in `columns` keeps ALL
+    its columns, so this is backward compatible by default. Needed for real
+    (wide) catalogs: a synthetic table might have 10 columns, but a real EBS
+    transaction table can have 100+, which alone can exceed the encoder's
+    context window even with just one or two such tables selected.
     """
     fk_index = {(fk.from_table, fk.from_column): fk for fk in schema.foreign_keys}
     chunks = []
     for t in schema.tables:
         if tables is not None and t.name not in tables:
             continue
+        allow = columns.get(t.name) if columns else None
         cols = []
         for c in t.columns:
+            fk = fk_index.get((t.name, c.name))
+            if allow is not None and c.name not in allow and not c.is_pk and not fk:
+                continue
             tags = []
             if c.is_pk:
                 tags.append("pk")
-            fk = fk_index.get((t.name, c.name))
             if fk:
                 tags.append(f"fk->{fk.to_table}.{fk.to_column}")
             if c.business_label:

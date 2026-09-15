@@ -14,5 +14,18 @@ venv/
 *.pptx
 ~$*
 
+# Real customer EBS extractions and one-off extraction tooling/logs -- these
+# describe a specific customer's actual production schema; never published
+# (matches the product's own "schema never leaves the customer network" design)
+schema*.json
+*.jsonl
+extract*.log
+other_source_check.log
+# Enumerating individual log names kept missing new ones (apps_phase_*.log,
+# train_ap_gl.log were both still unignored) -- ignore the whole class.
+*.log
+local_ops/
+SESSION_NOTES.md
+
 # OS / editor
 .DS_Store

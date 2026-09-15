@@ -131,6 +131,28 @@ def test_ebs_names_match_real_ebs_vocabulary():
     assert any(re.fullmatch(r"(ap|gl|po|ar|inv)_\w+_all", t) for t in names)
 
 
+def test_l3_sample_on_keyless_fact_table():
+    """A real EBS staging/interface table is often legitimately keyless (no PK,
+    no unique index) and may have no NAME/FLEXFIELD/LOOKUP/CODE column either --
+    _pick_group's every preference falls through to fact.primary_key, which is
+    None for such a table. Must fall back to the first column, not crash.
+    Level 3 (not 2) so the "no_group" shortcut can't skip the group-by path --
+    _sample_l3 always calls _sample_l2(fact, allow_no_group=False)."""
+    import random
+
+    from tinyllm.schema_graph.types import Column, ColumnType, Schema, SemanticRole, Table
+    from tinyllm.sql_sampler import QuerySampler
+
+    fact = Table("xx_staging_amounts", [
+        Column("batch_num", ColumnType.NUMBER),           # no role, not a PK
+        Column("amount", ColumnType.NUMBER, role=SemanticRole.AMOUNT),
+    ])
+    schema = Schema(name="keyless", tables=[fact])
+    graph = SchemaGraph(schema)
+    ast, _ = QuerySampler(graph, random.Random(0)).sample(level=3)
+    assert validate_graph(ast, graph).ok
+
+
 def test_corrupted_join_is_rejected():
     """The graph gate must FAIL a join that doesn't follow the documented FK."""
     ex = next(generate_example(s) for s in SEEDS if generate_example(s).ast.joins)
